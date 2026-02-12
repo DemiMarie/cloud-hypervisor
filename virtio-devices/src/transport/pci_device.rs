@@ -439,6 +439,7 @@ impl VirtioPciDevice {
         dma_handler: Option<Arc<dyn ExternalDmaMapping>>,
         pending_activations: Arc<Mutex<Vec<VirtioPciDeviceActivator>>>,
         snapshot: Option<&Snapshot>,
+        vm: Option<&Arc<dyn hypervisor::Vm>>,
     ) -> Result<Self> {
         let mut locked_device = device.lock().unwrap();
         let mut queue_evts = Vec::new();
@@ -474,7 +475,7 @@ impl VirtioPciDevice {
             (if locked_device.interrupt_source_mutable() {
                 interrupt_manager
                     .create_group_mut(config)
-                    .map(MaybeMutInterruptSourceGroup::Mutable)
+                    .map(|m| MaybeMutInterruptSourceGroup::Mutable(m, Arc::clone(vm.unwrap())))
             } else {
                 interrupt_manager
                     .create_group(config)
@@ -1013,7 +1014,6 @@ impl VirtioInterrupt for VirtioInterruptMsix {
         &self,
         int_type: VirtioInterruptType,
         eventfd: Option<EventFd>,
-        vm: &dyn hypervisor::Vm,
     ) -> io::Result<()> {
         let vector = self.vector(int_type);
 
@@ -1027,7 +1027,7 @@ impl VirtioInterrupt for VirtioInterruptMsix {
         }
 
         self.interrupt_source_group
-            .set_notifier(vector.into(), eventfd, vm)
+            .set_notifier(vector.into(), eventfd)
     }
 }
 
@@ -1662,7 +1662,6 @@ mod tests {
             &self,
             _int_type: VirtioInterruptType,
             _notifier: Option<EventFd>,
-            _vm: &dyn hypervisor::Vm,
         ) -> io::Result<()> {
             Ok(())
         }
@@ -1788,6 +1787,7 @@ mod tests {
             None,
             Arc::new(Mutex::new(Vec::new())),
             None,
+            None,
         )
         .unwrap()
     }
@@ -1868,6 +1868,7 @@ mod tests {
             false,
             None,
             Arc::new(Mutex::new(Vec::new())),
+            None,
             None,
         )
         .unwrap()
