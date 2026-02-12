@@ -2,15 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use vmm_sys_util::eventfd::EventFd;
 mod pci_common_config;
 mod pci_device;
 pub use pci_common_config::{VIRTIO_PCI_COMMON_CONFIG_ID, VirtioPciCommonConfig};
 pub use pci_device::{
+    MAX_DEVICE_AUXILIARY_NOTIFICATIONS, MAX_DRIVER_AUXILIARY_NOTIFICATIONS,
     VIRTIO_CONFIG_BAR_INDEX, VIRTIO_SHM_BAR_INDEX, VirtioPciDevice, VirtioPciDeviceActivator,
-    VirtioPciDeviceError,
+    VirtioPciDeviceError, device_auxiliary_notification_addr,
 };
 
 pub trait VirtioTransport {
-    fn ioeventfds(&self, base_addr: u64) -> impl Iterator<Item = (&EventFd, u64)>;
+    fn ioeventfds(&self, base_addr: u64) -> pci_device::EventfdIterator<'_>;
 }
