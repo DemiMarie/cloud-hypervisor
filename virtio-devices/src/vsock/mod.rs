@@ -184,7 +184,6 @@ pub mod tests {
             &self,
             _interrupt: VirtioInterruptType,
             _eventfd: Option<EventFd>,
-            _vm: &dyn hypervisor::Vm,
         ) -> io::Result<()> {
             unimplemented!()
         }
@@ -207,7 +206,6 @@ pub mod tests {
             &self,
             _interrupt: VirtioInterruptType,
             _eventfd: Option<EventFd>,
-            _vm: &dyn hypervisor::Vm,
         ) -> io::Result<()> {
             Ok(())
         }

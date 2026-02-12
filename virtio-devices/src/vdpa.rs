@@ -659,12 +659,7 @@ mod tests {
             Ok(())
         }
 
-        fn set_notifier(
-            &self,
-            _: VirtioInterruptType,
-            _: Option<EventFd>,
-            _: &dyn hypervisor::Vm,
-        ) -> io::Result<()> {
+        fn set_notifier(&self, _: VirtioInterruptType, _: Option<EventFd>) -> io::Result<()> {
             Ok(())
         }
     }
