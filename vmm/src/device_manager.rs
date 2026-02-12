@@ -800,13 +800,15 @@ impl DeviceRelocation for AddressManager {
         let any_dev = pci_dev.as_any_mut();
         if let Some(virtio_pci_dev) = any_dev.downcast_ref::<VirtioPciDevice>() {
             if bar_idx == VIRTIO_CONFIG_BAR_INDEX {
-                for (event, addr) in virtio_pci_dev.ioeventfds(old_base) {
+                let mut iter = virtio_pci_dev.ioeventfds(old_base);
+                while let Some((event, addr)) = iter.next() {
                     let io_addr = IoEventAddress::Mmio(addr);
                     self.vm.unregister_ioevent(event, &io_addr).map_err(|e| {
                         io::Error::other(format!("failed to unregister ioevent: {e:?}"))
                     })?;
                 }
-                for (event, addr) in virtio_pci_dev.ioeventfds(new_base) {
+                iter = virtio_pci_dev.ioeventfds(new_base);
+                while let Some((event, addr)) = iter.next() {
                     let io_addr = IoEventAddress::Mmio(addr);
                     self.vm
                         .register_ioevent(event, &io_addr, None)
@@ -5115,12 +5117,17 @@ impl DeviceManager {
             .find(|bar| bar.idx() == VIRTIO_CONFIG_BAR_INDEX)
             .unwrap()
             .addr();
-        for (event, addr) in virtio_pci_device.lock().unwrap().ioeventfds(bar_addr) {
-            let io_addr = IoEventAddress::Mmio(addr);
-            self.address_manager
-                .vm
-                .register_ioevent(event, &io_addr, None)
-                .map_err(DeviceManagerError::RegisterIoevent)?;
+
+        {
+            let virtio_pci_device = virtio_pci_device.lock().unwrap();
+            let mut iter = virtio_pci_device.ioeventfds(bar_addr);
+            while let Some((event, addr)) = iter.next() {
+                let io_addr = IoEventAddress::Mmio(addr);
+                self.address_manager
+                    .vm
+                    .register_ioevent(event, &io_addr, None)
+                    .map_err(DeviceManagerError::RegisterIoevent)?;
+            }
         }
 
         // Update the device tree with correct resource information.
@@ -5700,7 +5707,8 @@ impl DeviceManager {
                     _ => None,
                 });
                 if let Some(bar_addr) = bar_addr {
-                    for (event, addr) in dev.ioeventfds(bar_addr) {
+                    let mut iter = dev.ioeventfds(bar_addr);
+                    while let Some((event, addr)) = iter.next() {
                         let io_addr = IoEventAddress::Mmio(addr);
                         self.address_manager
                             .vm
