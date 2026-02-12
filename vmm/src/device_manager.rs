@@ -612,6 +612,9 @@ pub enum DeviceManagerError {
     /// Disk resizing failed.
     #[error("Disk resize error")]
     DiskResize(#[source] VirtioBlockError),
+    /// Too many MSI-X interrupts
+    #[error("Too many MSI-X interrupts: {0}")]
+    TooManyInterrupts(u16),
 }
 
 pub type DeviceManagerResult<T> = result::Result<T, DeviceManagerError>;
