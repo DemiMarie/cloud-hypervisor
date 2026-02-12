@@ -51,7 +51,6 @@ pub trait VirtioInterrupt: Send + Sync {
         &self,
         int_type: VirtioInterruptType,
         notifier: Option<EventFd>,
-        vm: &dyn hypervisor::Vm,
     ) -> io::Result<()>;
 }
 
@@ -541,12 +540,7 @@ mod tests {
             Ok(())
         }
 
-        fn set_notifier(
-            &self,
-            _: VirtioInterruptType,
-            _: Option<EventFd>,
-            _: &dyn hypervisor::Vm,
-        ) -> io::Result<()> {
+        fn set_notifier(&self, _: VirtioInterruptType, _: Option<EventFd>) -> io::Result<()> {
             unimplemented!()
         }
     }
@@ -556,12 +550,7 @@ mod tests {
         fn trigger(&self, _: VirtioInterruptType) -> io::Result<()> {
             Ok(())
         }
-        fn set_notifier(
-            &self,
-            _: VirtioInterruptType,
-            _: Option<EventFd>,
-            _: &dyn hypervisor::Vm,
-        ) -> io::Result<()> {
+        fn set_notifier(&self, _: VirtioInterruptType, _: Option<EventFd>) -> io::Result<()> {
             unimplemented!()
         }
     }

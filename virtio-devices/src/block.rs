@@ -1347,7 +1347,6 @@ mod tests {
     use std::io::Result as IoResult;
 
     use block::async_io::{AsyncIoCompletion, AsyncIoOperation, AsyncIoResult};
-    use hypervisor::Vm;
     use vm_memory::GuestAddress;
     use vm_virtio::queue::testing::VirtQueue as GuestQ;
     use vmm_sys_util::eventfd::EFD_NONBLOCK;
@@ -1359,12 +1358,7 @@ mod tests {
         fn trigger(&self, _: VirtioInterruptType) -> IoResult<()> {
             Ok(())
         }
-        fn set_notifier(
-            &self,
-            _: VirtioInterruptType,
-            _: Option<EventFd>,
-            _: &dyn Vm,
-        ) -> IoResult<()> {
+        fn set_notifier(&self, _: VirtioInterruptType, _: Option<EventFd>) -> IoResult<()> {
             unimplemented!()
         }
     }

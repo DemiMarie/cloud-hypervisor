@@ -76,7 +76,10 @@ pub struct MsixConfigState {
 #[derive(Clone)]
 pub enum MaybeMutInterruptSourceGroup {
     Immutable(Arc<dyn InterruptSourceGroup>),
-    Mutable(Arc<Mutex<dyn InterruptSourceGroup>>),
+    Mutable(
+        Arc<Mutex<dyn InterruptSourceGroup>>,
+        Arc<dyn hypervisor::Vm>,
+    ),
 }
 
 macro_rules! impl_method {
@@ -87,7 +90,7 @@ macro_rules! impl_method {
             fn $i(&self $(,$index: $InterruptIndex)*) -> $r {
                 match self {
                     Self::Immutable(source) => source.$i($($index),*),
-                    Self::Mutable(source) => source.lock().unwrap().$i($($index),*),
+                    Self::Mutable(source, _) => source.lock().unwrap().$i($($index),*),
                 }
             }
         )*
@@ -113,17 +116,12 @@ impl InterruptSourceGroup for MaybeMutInterruptSourceGroup {
 }
 
 impl MaybeMutInterruptSourceGroup {
-    pub fn set_notifier(
-        &self,
-        index: InterruptIndex,
-        eventfd: Option<EventFd>,
-        vm: &dyn hypervisor::Vm,
-    ) -> io::Result<()> {
+    pub fn set_notifier(&self, index: InterruptIndex, eventfd: Option<EventFd>) -> io::Result<()> {
         match self {
             Self::Immutable(_) => panic!(
                 "Attempted to set a notifier of an immutable source.  You must mark your device as needing a mutable source by having sets_irqfd() return true."
             ),
-            Self::Mutable(source) => source.lock().unwrap().set_notifier(index, eventfd, vm),
+            Self::Mutable(source, vm) => source.lock().unwrap().set_notifier(index, eventfd, &**vm),
         }
     }
 }
