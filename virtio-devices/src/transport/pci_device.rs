@@ -10,8 +10,8 @@ use std::any::Any;
 use std::io::Write;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
-use std::{cmp, io, result};
+use std::sync::{Arc, Barrier, Mutex, MutexGuard};
+use std::{cmp, io, iter, result, slice};
 
 use anyhow::anyhow;
 use libc::EFD_NONBLOCK;
@@ -53,8 +53,25 @@ enum PciCapabilityType {
     Isr = 3,
     Device = 4,
     Pci = 5,
+    // Vhost-guest device auxiliary notifications
+    DeviceAuxiliaryNotification = 6,
+    // Vhost-guest driver auxiliary notifications
+    DriverAuxiliaryNotification = 7,
+    // Shared memory
     SharedMemory = 8,
 }
+
+/// Maximum number of device auxiliary notifications.  The only planned user
+/// (vhost-guest) cannot support more than 256 queues due to protocol limitations.
+/// Each of them requires 2 device auxiliary notifications, and one more device
+/// auxiliary notification is needed to inform the frontend of changes to the
+/// migration log.
+pub const MAX_DEVICE_AUXILIARY_NOTIFICATIONS: u16 = 2 * MAX_DRIVER_AUXILIARY_NOTIFICATIONS + 1;
+
+/// Maximum number of driver auxiliary notifications.  The only planned user
+/// (vhost-guest) cannot support more than 256 queues due to protocol limitations.
+/// Each of them requires 1 driver auxiliary notification.
+pub(super) const MAX_DRIVER_AUXILIARY_NOTIFICATIONS: u16 = u8::MAX as _;
 
 // This offset represents the 2 bytes omitted from the VirtioPciCap structure
 // as they are already handled through add_capability(). These 2 bytes are the
@@ -277,7 +294,30 @@ const DEVICE_CONFIG_BAR_OFFSET: u64 = next_bar_addr(ISR_CONFIG_BAR_OFFSET, ISR_C
 const DEVICE_CONFIG_SIZE: u64 = 0x1000;
 const NOTIFICATION_BAR_OFFSET: u64 = next_bar_addr(DEVICE_CONFIG_BAR_OFFSET, DEVICE_CONFIG_SIZE);
 const NOTIFICATION_SIZE: u64 = MAX_QUEUES * NOTIFY_OFF_MULTIPLIER as u64;
-const MSIX_TABLE_BAR_OFFSET: u64 = next_bar_addr(NOTIFICATION_BAR_OFFSET, NOTIFICATION_SIZE);
+const DRIVER_AUXILIARY_NOTIFICATION_BAR_OFFSET: u64 =
+    next_bar_addr(NOTIFICATION_BAR_OFFSET, NOTIFICATION_SIZE);
+const DRIVER_AUXILIARY_NOTIFICATION_SIZE: u64 = 4;
+
+// Make this 64K aligned again so that the device auxiliary notifications
+// can be directly exposed to userspace.  These are always safe for userspace
+// to write to via MMIO.
+const DEVICE_AUXILIARY_NOTIFICATION_BAR_OFFSET: u64 = next_bar_addr_align(
+    DRIVER_AUXILIARY_NOTIFICATION_BAR_OFFSET,
+    DRIVER_AUXILIARY_NOTIFICATION_SIZE,
+    1u64 << 16,
+);
+const DEVICE_AUXILIARY_NOTIFICATION_OFF_MULTIPLIER: u32 = NOTIFY_OFF_MULTIPLIER;
+const DEVICE_AUXILIARY_NOTIFICATION_SIZE: u64 =
+    MAX_DEVICE_AUXILIARY_NOTIFICATIONS as u64 * DEVICE_AUXILIARY_NOTIFICATION_OFF_MULTIPLIER as u64;
+
+// Make this 64K aligned again so that the device auxiliary notifications
+// can be directly exposed to userspace.  These are always safe for userspace
+// to write to via MMIO.
+const MSIX_TABLE_BAR_OFFSET: u64 = next_bar_addr_align(
+    DEVICE_AUXILIARY_NOTIFICATION_BAR_OFFSET,
+    DEVICE_AUXILIARY_NOTIFICATION_SIZE,
+    1u64 << 16,
+);
 
 // The size is 256KiB because the table can hold up to 2048 entries, with each
 // entry being 128 bits (4 DWORDS).
@@ -363,7 +403,12 @@ impl VirtioPciDeviceActivator {
 pub enum VirtioPciDeviceError {
     #[error("Failed creating VirtioPciDevice")]
     CreateVirtioPciDevice(#[source] anyhow::Error),
+    #[error("Too many device auxiliary notifications: {0} (limit 513)")]
+    TooManyDeviceAuxiliaryNotifications(u16),
+    #[error("Too many MSI-X interrupts: {0} (limit 2048)")]
+    TooManyInterrupts(u16),
 }
+
 pub(super) type Result<T> = result::Result<T, VirtioPciDeviceError>;
 
 pub struct VirtioPciDevice {
@@ -393,11 +438,21 @@ pub struct VirtioPciDevice {
     queues: Vec<Queue>,
     queue_evts: Vec<EventFd>,
 
+    // Device auxiliary notifications. Might be accessed from another
+    // thread, as they may come from a separate process.
+    aux_notify_evts: Option<Arc<Mutex<Vec<EventFd>>>>,
+
     // Guest memory
     memory: GuestMemoryAtomic<GuestMemoryMmap>,
 
     // Whether to use 64-bit bar location or 32-bit
     use_64bit_bar: bool,
+
+    // Number of device auxiliary notifications
+    num_device_auxiliary_notifications: u16,
+
+    // Selected driver auxiliary notification
+    driver_auxiliary_notification_select: u16,
 
     // Add a dedicated structure to hold information about the very specific
     // virtio-pci capability VIRTIO_PCI_CAP_PCI_CFG. This is needed to support
@@ -439,12 +494,51 @@ impl VirtioPciDevice {
     ) -> Result<Self> {
         let mut locked_device = device.lock().unwrap();
         let mut queue_evts = Vec::new();
-        for _ in locked_device.queue_max_sizes().iter() {
+        let num_device_auxiliary_notifications = locked_device.max_device_auxiliary_notifications();
+        if num_device_auxiliary_notifications > MAX_DEVICE_AUXILIARY_NOTIFICATIONS {
+            return Err(VirtioPciDeviceError::TooManyDeviceAuxiliaryNotifications(
+                num_device_auxiliary_notifications,
+            ));
+        }
+        // Number of MSIs that are *not* the configuration change interrupt.
+        let max_dev_aux_notifications =
+            usize::from(locked_device.max_device_auxiliary_notifications());
+        let queue_msis = locked_device.queue_max_sizes().len();
+        if queue_msis > (NOTIFICATION_SIZE / u64::from(NOTIFY_OFF_MULTIPLIER)) as usize {
+            return Err(VirtioPciDeviceError::CreateVirtioPciDevice(anyhow!(
+                "Got {} queues, but limit is {}",
+                queue_msis,
+                NOTIFICATION_SIZE / u64::from(NOTIFY_OFF_MULTIPLIER)
+            )));
+        }
+
+        for _ in 0..queue_msis {
             queue_evts.push(EventFd::new(EFD_NONBLOCK).map_err(|e| {
                 VirtioPciDeviceError::CreateVirtioPciDevice(anyhow!("Failed creating eventfd: {e}"))
             })?);
         }
-        let num_queues = locked_device.queue_max_sizes().len();
+
+        let max_supported_dev_aux_notifications = (DEVICE_AUXILIARY_NOTIFICATION_SIZE
+            / u64::from(DEVICE_AUXILIARY_NOTIFICATION_OFF_MULTIPLIER))
+            as usize;
+        let aux_notify_evts = if max_dev_aux_notifications == 0 {
+            None
+        } else if max_dev_aux_notifications > max_supported_dev_aux_notifications {
+            return Err(VirtioPciDeviceError::CreateVirtioPciDevice(anyhow!(
+                "Got {max_dev_aux_notifications} device auxiliary notifications, \
+                 but limit is {max_supported_dev_aux_notifications}",
+            )));
+        } else {
+            let mut evts = Vec::new();
+            for _ in 0..max_dev_aux_notifications {
+                evts.push(EventFd::new(EFD_NONBLOCK).map_err(|e| {
+                    VirtioPciDeviceError::CreateVirtioPciDevice(anyhow!(
+                        "Failed creating eventfd: {e}"
+                    ))
+                })?);
+            }
+            Some(Arc::new(Mutex::new(evts)))
+        };
 
         if let Some(access_platform) = access_platform {
             locked_device.set_access_platform(Arc::clone(access_platform));
@@ -459,16 +553,17 @@ impl VirtioPciDevice {
         let pci_device_id = VIRTIO_PCI_DEVICE_ID_BASE + locked_device.device_type() as u16;
 
         // Allows support for one MSI-X vector per interrupt needed by the device.
-        // It also adds 1 as we need to take into account the dedicated vector to notify
-        // about a virtio config change.
-        let msix_num = (locked_device.queue_max_sizes().len() + 1) as u16;
+        let msix_num = locked_device.min_interupts();
+        if msix_num > 2048 {
+            return Err(VirtioPciDeviceError::TooManyInterrupts(msix_num));
+        }
 
         let interrupt_source_group: MaybeMutInterruptSourceGroup = {
             let config = MsiIrqGroupConfig {
                 base: 0,
                 count: msix_num as InterruptIndex,
             };
-            (if locked_device.interrupt_source_mutable() {
+            (if aux_notify_evts.is_some() {
                 interrupt_manager
                     .create_group_mut(config)
                     .map(|m| MaybeMutInterruptSourceGroup::Mutable(m, Arc::clone(vm.unwrap())))
@@ -555,7 +650,8 @@ impl VirtioPciDevice {
                     driver_feature_select: 0,
                     queue_select: 0,
                     msix_config: VIRTQ_MSI_NO_VECTOR,
-                    msix_queues: vec![VIRTQ_MSI_NO_VECTOR; num_queues],
+                    msix_queues: vec![VIRTQ_MSI_NO_VECTOR; queue_msis],
+                    msix_drv_auxiliary: vec![VIRTQ_MSI_NO_VECTOR; queue_msis],
                 },
                 Arc::clone(&device),
             )
@@ -618,6 +714,7 @@ impl VirtioPciDevice {
             Arc::clone(&common_config.msix_config),
             Arc::clone(&common_config.config_changed),
             Arc::clone(&common_config.msix_queues),
+            common_config.msix_drv_auxiliary.clone(),
             interrupt_source_group.clone(),
         ));
 
@@ -640,6 +737,9 @@ impl VirtioPciDevice {
             activate_evt,
             dma_handler,
             pending_activations,
+            num_device_auxiliary_notifications,
+            aux_notify_evts,
+            driver_auxiliary_notification_select: 0,
         };
 
         // In case of a restore, we can activate the device, as we know at
@@ -682,6 +782,9 @@ impl VirtioPciDevice {
     /// Gets the list of queue events that must be triggered whenever the VM writes to
     /// `virtio::NOTIFY_REG_OFFSET` past the MMIO base. Each event must be triggered when the
     /// value being written equals the index of the event in this list.
+    ///
+    /// This is only useful for tests as it omits device auxiliary notification events.
+    #[cfg(test)]
     fn queue_evts(&self) -> &[EventFd] {
         self.queue_evts.as_slice()
     }
@@ -769,6 +872,30 @@ impl VirtioPciDevice {
             .add_capability(&msix_cap)
             .map_err(PciDeviceError::CapabilitiesSetup)?;
 
+        if self.num_device_auxiliary_notifications > 0 {
+            let device_auxiliary_notification_cap = VirtioPciNotifyCap::new(
+                PciCapabilityType::DeviceAuxiliaryNotification,
+                VIRTIO_CONFIG_BAR_INDEX as u8,
+                DEVICE_AUXILIARY_NOTIFICATION_BAR_OFFSET as u32,
+                DEVICE_AUXILIARY_NOTIFICATION_SIZE as u32,
+                Le32::from(DEVICE_AUXILIARY_NOTIFICATION_OFF_MULTIPLIER),
+            );
+            self.configuration
+                .add_capability(&device_auxiliary_notification_cap)
+                .map_err(PciDeviceError::CapabilitiesSetup)?;
+        }
+
+        if self.aux_notify_evts.is_some() {
+            let driver_auxiliary_notification_cap = VirtioPciCap::new(
+                PciCapabilityType::DriverAuxiliaryNotification,
+                VIRTIO_CONFIG_BAR_INDEX as u8,
+                DRIVER_AUXILIARY_NOTIFICATION_BAR_OFFSET as u32,
+                DRIVER_AUXILIARY_NOTIFICATION_SIZE as u32,
+            );
+            self.configuration
+                .add_capability(&driver_auxiliary_notification_cap)
+                .map_err(PciDeviceError::CapabilitiesSetup)?;
+        }
         Ok(())
     }
 
@@ -869,15 +996,54 @@ impl VirtioPciDevice {
     }
 }
 
-impl VirtioTransport for VirtioPciDevice {
-    fn ioeventfds(&self, base_addr: u64) -> impl Iterator<Item = (&EventFd, u64)> {
-        let notify_base = base_addr + NOTIFICATION_BAR_OFFSET;
-        self.queue_evts().iter().enumerate().map(move |(i, event)| {
+pub struct EventfdIterator<'a> {
+    base: u64,
+    cursor: usize,
+    unlocked: iter::Enumerate<slice::Iter<'a, EventFd>>,
+    data: Option<MutexGuard<'a, Vec<EventFd>>>,
+}
+
+impl<'a> EventfdIterator<'a> {
+    pub fn next(&mut self) -> Option<(&EventFd, u64)> {
+        if let Some((i, fd)) = self.unlocked.next() {
+            return Some((
+                fd,
+                self.base + NOTIFICATION_BAR_OFFSET + i as u64 * u64::from(NOTIFY_OFF_MULTIPLIER),
+            ));
+        }
+        let Self {
+            cursor,
+            data: Some(data),
+            base,
+            unlocked: _,
+        } = self
+        else {
+            return None;
+        };
+        let base = *base;
+        let old_cursor = *cursor;
+        data.get(old_cursor).map(|fd| {
+            *cursor = old_cursor + 1;
             (
-                event,
-                notify_base + i as u64 * u64::from(NOTIFY_OFF_MULTIPLIER),
+                fd,
+                base + DEVICE_AUXILIARY_NOTIFICATION_BAR_OFFSET
+                    + old_cursor as u64 * u64::from(DEVICE_AUXILIARY_NOTIFICATION_OFF_MULTIPLIER),
             )
         })
+    }
+}
+
+impl VirtioTransport for VirtioPciDevice {
+    fn ioeventfds(&self, base: u64) -> EventfdIterator<'_> {
+        EventfdIterator {
+            base,
+            cursor: 0,
+            unlocked: self.queue_evts.iter().enumerate(),
+            data: self
+                .aux_notify_evts
+                .as_ref()
+                .map(|evts| evts.lock().unwrap()),
+        }
     }
 }
 
@@ -886,6 +1052,7 @@ pub(super) struct VirtioInterruptMsix {
     config_vector: Arc<AtomicU16>,
     config_changed: Arc<AtomicBool>,
     queues_vectors: Arc<Mutex<Vec<u16>>>,
+    drv_aux_notification_vectors: Option<Arc<Mutex<Vec<u16>>>>,
     interrupt_source_group: MaybeMutInterruptSourceGroup,
     msix_table_size: usize,
 }
@@ -896,6 +1063,7 @@ impl VirtioInterruptMsix {
         config_vector: Arc<AtomicU16>,
         config_changed: Arc<AtomicBool>,
         queues_vectors: Arc<Mutex<Vec<u16>>>,
+        drv_aux_notification_vectors: Option<Arc<Mutex<Vec<u16>>>>,
         interrupt_source_group: MaybeMutInterruptSourceGroup,
     ) -> Self {
         let msix_table_size = msix_config.lock().unwrap().table_entries.len();
@@ -904,6 +1072,7 @@ impl VirtioInterruptMsix {
             config_vector,
             config_changed,
             queues_vectors,
+            drv_aux_notification_vectors,
             interrupt_source_group,
             msix_table_size,
         }
@@ -915,6 +1084,12 @@ impl VirtioInterruptMsix {
             VirtioInterruptType::Queue(queue_index) => {
                 self.queues_vectors.lock().unwrap()[queue_index as usize]
             }
+            VirtioInterruptType::DrvAuxNotification(notification_index) => self
+                .drv_aux_notification_vectors
+                .as_ref()
+                .expect("aux notifications always configured before being triggered")
+                .lock()
+                .unwrap()[notification_index as usize],
         }
     }
 }
@@ -925,12 +1100,7 @@ impl VirtioInterrupt for VirtioInterruptMsix {
             self.config_changed.store(true, Ordering::Release);
         }
 
-        let vector = match int_type {
-            VirtioInterruptType::Config => self.config_vector.load(Ordering::Acquire),
-            VirtioInterruptType::Queue(queue_index) => {
-                self.queues_vectors.lock().unwrap()[queue_index as usize]
-            }
-        };
+        let vector = self.vector(int_type);
 
         if vector == VIRTQ_MSI_NO_VECTOR {
             return Ok(());
@@ -992,6 +1162,16 @@ impl VirtioInterrupt for VirtioInterruptMsix {
         self.interrupt_source_group
             .set_notifier(vector.into(), eventfd)
     }
+}
+
+pub fn device_auxiliary_notification_addr(base_addr: u64, dev_aux_notification: u16) -> u64 {
+    base_addr
+        .checked_add(
+            u64::from(dev_aux_notification)
+                * u64::from(DEVICE_AUXILIARY_NOTIFICATION_OFF_MULTIPLIER)
+                + DEVICE_AUXILIARY_NOTIFICATION_BAR_OFFSET,
+        )
+        .expect("address goes past end of address space")
 }
 
 impl PciDevice for VirtioPciDevice {
@@ -1220,6 +1400,59 @@ impl PciDevice for VirtioPciDevice {
             {
                 // Handled with ioeventfds.
             }
+            o if (DRIVER_AUXILIARY_NOTIFICATION_BAR_OFFSET
+                ..DRIVER_AUXILIARY_NOTIFICATION_BAR_OFFSET
+                    + DRIVER_AUXILIARY_NOTIFICATION_SIZE)
+                .contains(&o) =>
+            {
+                let Some(aux) = self.common_config.msix_drv_auxiliary.as_ref() else {
+                    warn!("no driver auxiliary notifications");
+                    return;
+                };
+                let cb = || {
+                    aux.lock()
+                        .unwrap()
+                        .get(usize::from(self.driver_auxiliary_notification_select))
+                        .copied()
+                        .unwrap_or(VIRTQ_MSI_NO_VECTOR)
+                };
+                match data.len() {
+                    1 => match o - DRIVER_AUXILIARY_NOTIFICATION_BAR_OFFSET {
+                        0 => data[0] = self.driver_auxiliary_notification_select as u8,
+                        1 => data[0] = (self.driver_auxiliary_notification_select >> 8) as u8,
+                        2 => data[0] = cb() as u8,
+                        3 => data[0] = (cb() >> 8) as u8,
+                        _ => data.fill(0xFF),
+                    },
+                    2 => match o - DRIVER_AUXILIARY_NOTIFICATION_BAR_OFFSET {
+                        0 => {
+                            data[0] = self.driver_auxiliary_notification_select as u8;
+                            data[1] = (self.driver_auxiliary_notification_select >> 8) as u8;
+                        }
+                        2 => {
+                            let selected = cb();
+                            data[0] = selected as u8;
+                            data[1] = (selected >> 8) as u8;
+                        }
+                        _ => data.fill(0xFF),
+                    },
+                    4 if o == DRIVER_AUXILIARY_NOTIFICATION_BAR_OFFSET => {
+                        let selected = cb();
+                        data[0] = self.driver_auxiliary_notification_select as u8;
+                        data[1] = (self.driver_auxiliary_notification_select >> 8) as u8;
+                        data[2] = selected as u8;
+                        data[3] = (selected >> 8) as u8;
+                    }
+                    _ => data.fill(0xFF),
+                }
+            }
+            o if (DEVICE_AUXILIARY_NOTIFICATION_BAR_OFFSET
+                ..DEVICE_AUXILIARY_NOTIFICATION_BAR_OFFSET
+                    + DEVICE_AUXILIARY_NOTIFICATION_SIZE)
+                .contains(&o) =>
+            {
+                // Handled with ioeventfds.
+            }
             o if (MSIX_TABLE_BAR_OFFSET..MSIX_TABLE_BAR_OFFSET + MSIX_TABLE_SIZE).contains(&o) => {
                 self.msix_config
                     .lock()
@@ -1255,8 +1488,27 @@ impl PciDevice for VirtioPciDevice {
                 let mut device = self.device.lock().unwrap();
                 device.write_config(o - DEVICE_CONFIG_BAR_OFFSET, data);
             }
-            o if (NOTIFICATION_BAR_OFFSET..NOTIFICATION_BAR_OFFSET + NOTIFICATION_SIZE)
+            o if (DRIVER_AUXILIARY_NOTIFICATION_BAR_OFFSET
+                ..DRIVER_AUXILIARY_NOTIFICATION_BAR_OFFSET
+                    + DRIVER_AUXILIARY_NOTIFICATION_SIZE)
                 .contains(&o) =>
+            {
+                let o = (o - DRIVER_AUXILIARY_NOTIFICATION_BAR_OFFSET) as usize;
+                if matches!((o, data.len()), (0, 2 | 4)) {
+                    self.driver_auxiliary_notification_select =
+                        u16::from(data[0]) | u16::from(data[1]) << 8;
+                }
+                if matches!((o, data.len()), (2, 2) | (0, 4)) {
+                    let value = u16::from(data[2 - o]) | u16::from(data[3 - o]) << 8;
+                    self.common_config.set_drv_aux_notification_msix(value);
+                }
+            }
+            o if (NOTIFICATION_BAR_OFFSET..NOTIFICATION_BAR_OFFSET + NOTIFICATION_SIZE)
+                .contains(&o)
+                || (DEVICE_AUXILIARY_NOTIFICATION_BAR_OFFSET
+                    ..DEVICE_AUXILIARY_NOTIFICATION_BAR_OFFSET
+                        + DEVICE_AUXILIARY_NOTIFICATION_SIZE)
+                    .contains(&o) =>
             {
                 // A queue notification (doorbell) is normally delivered to the device through an
                 // ioeventfd registered on the notify address, so a plain MMIO write to the notify
@@ -1271,14 +1523,15 @@ impl PciDevice for VirtioPciDevice {
                 // spec explicitly allows driving the device purely through the PCI_CFG window, so
                 // honour a doorbell that arrives this way.
                 let mut signalled = false;
-                for (event, addr) in self.ioeventfds(base) {
+                let mut iter = self.ioeventfds(base);
+                while let Some((event, addr)) = iter.next() {
                     if addr == base + offset {
                         event.write(1).ok();
                         signalled = true;
                     }
                 }
                 if !signalled {
-                    warn!("Notification BAR write matched no queue: offset = 0x{o:x}");
+                    warn!("Notification or doorbell BAR write matched no queue: offset = 0x{o:x}");
                 }
             }
             o if (MSIX_TABLE_BAR_OFFSET..MSIX_TABLE_BAR_OFFSET + MSIX_TABLE_SIZE).contains(&o) => {
@@ -1439,6 +1692,7 @@ mod tests {
             config_vector,
             config_changed,
             queues_vectors,
+            None,
             MaybeMutInterruptSourceGroup::Immutable(isg),
         )
     }

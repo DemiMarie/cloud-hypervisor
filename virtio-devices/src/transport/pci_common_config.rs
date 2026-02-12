@@ -30,6 +30,7 @@ pub struct VirtioPciCommonConfigState {
     pub queue_select: u16,
     pub msix_config: u16,
     pub msix_queues: Vec<u16>,
+    pub msix_drv_auxiliary: Vec<u16>,
 }
 
 /* The standard layout for the ring is a continuous chunk of memory which looks
@@ -137,6 +138,7 @@ pub struct VirtioPciCommonConfig {
     pub queue_select: u16,
     pub msix_config: Arc<AtomicU16>,
     pub msix_queues: Arc<Mutex<Vec<u16>>>,
+    pub msix_drv_auxiliary: Option<Arc<Mutex<Vec<u16>>>>,
 }
 
 impl VirtioPciCommonConfig {
@@ -151,6 +153,11 @@ impl VirtioPciCommonConfig {
             queue_select: state.queue_select,
             msix_config: Arc::new(AtomicU16::new(state.msix_config)),
             msix_queues: Arc::new(Mutex::new(state.msix_queues)),
+            msix_drv_auxiliary: if state.msix_drv_auxiliary.is_empty() {
+                None
+            } else {
+                Some(Arc::new(Mutex::new(state.msix_drv_auxiliary)))
+            },
         }
     }
 
@@ -173,6 +180,11 @@ impl VirtioPciCommonConfig {
             queue_select: self.queue_select,
             msix_config: self.msix_config.load(Ordering::Acquire),
             msix_queues: self.msix_queues.lock().unwrap().clone(),
+            msix_drv_auxiliary: self
+                .msix_drv_auxiliary
+                .as_ref()
+                .map(|v| v.lock().unwrap().clone())
+                .unwrap_or(vec![]),
         }
     }
 
@@ -427,6 +439,17 @@ impl VirtioPciCommonConfig {
             f(queue);
         }
     }
+
+    pub(crate) fn set_drv_aux_notification_msix(&self, value: u16) {
+        if let Some(entry) = self.msix_drv_auxiliary.as_ref()
+            && let Some(entry) = entry
+                .lock()
+                .unwrap()
+                .get_mut(usize::from(self.queue_select))
+        {
+            *entry = value;
+        }
+    }
 }
 
 impl Pausable for VirtioPciCommonConfig {}
@@ -485,6 +508,7 @@ mod tests {
             queue_select: 0xff,
             msix_config: Arc::new(AtomicU16::new(0)),
             msix_queues: Arc::new(Mutex::new(vec![0; 3])),
+            msix_drv_auxiliary: None,
         };
 
         let mut queues = Vec::new();
@@ -538,6 +562,7 @@ mod tests {
             queue_select: 0,
             msix_config: Arc::new(AtomicU16::new(0)),
             msix_queues: Arc::new(Mutex::new(vec![0; 1])),
+            msix_drv_auxiliary: None,
         };
 
         let mut queues = vec![Queue::new(256).unwrap()];
@@ -567,6 +592,7 @@ mod tests {
             queue_select: 7,
             msix_config: Arc::new(AtomicU16::new(3)),
             msix_queues: Arc::new(Mutex::new(vec![1, 2, 3])),
+            msix_drv_auxiliary: None,
         };
 
         regs.reset();
@@ -602,6 +628,7 @@ mod tests {
             queue_select: 0,
             msix_config: Arc::new(AtomicU16::new(0)),
             msix_queues: Arc::new(Mutex::new(vec![0; 1])),
+            msix_drv_auxiliary: None,
         }
     }
 
