@@ -37,6 +37,7 @@ use crate::{
 pub enum VirtioInterruptType {
     Config,
     Queue(u16),
+    DrvAuxNotification(u16),
 }
 
 pub trait VirtioInterrupt: Send + Sync {
@@ -86,19 +87,32 @@ pub trait VirtioDevice: Send {
     /// The virtio device type.
     fn device_type(&self) -> u32;
 
+    /// The maximum number of device auxiliary notifications the device supports.
+    /// Most devices don't support any. Limited to
+    /// [`crate::transport::MAX_DEVICE_AUXILIARY_NOTIFICATIONS`] device auxiliary
+    /// notifications.
+    fn max_device_auxiliary_notifications(&self) -> u16 {
+        0
+    }
+
+    /// The maximum number of driver auxiliary notifications the device supports.
+    /// Most devices don't support any. Limited to
+    /// [`crate::transport::MAX_DRIVER_AUXILIARY_NOTIFICATIONS`] device auxiliary
+    /// notifications.
+    fn max_driver_auxiliary_notifications(&self) -> u16 {
+        0
+    }
+
     /// The maximum size of each queue that this device supports.
     fn queue_max_sizes(&self) -> &[u16];
 
-    /// Whether the device needs to register extra irqfds at runtime
-    /// from external sources.
-    /// The default is false.  If this is true, locking is required for
-    /// most operations involving interrupts (but not for sending)
-    /// interrupts from external irqfds).
-    ///
-    /// If the device claims to not need to register irqfds, but
-    /// attempts to do so, a panic will ensue.
-    fn interrupt_source_mutable(&self) -> bool {
-        false
+    /// The minimum number of MSI-X interrupts needed by the device.
+    /// Capped at u16::MAX, though anything greater than 2047 is an error.
+    /// Includes the interrupt needed for configuration space change.
+    fn min_interupts(&self) -> u16 {
+        self.max_driver_auxiliary_notifications()
+            .saturating_add(1)
+            .saturating_add(self.queue_max_sizes().len().min(usize::from(u16::MAX)) as u16)
     }
 
     /// The set of feature bits that this device supports.
