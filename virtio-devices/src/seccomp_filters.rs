@@ -33,6 +33,7 @@ pub enum Thread {
     VirtioVhostNetCtl,
     VirtioVsock,
     VirtioWatchdog,
+    VirtioVhostGuest,
 }
 
 /// Shorthand for chaining `SeccompCondition`s with the `and` operator  in a `SeccompRule`.
@@ -327,6 +328,33 @@ fn virtio_watchdog_thread_rules() -> Vec<(i64, Vec<SeccompRule>)> {
     ]
 }
 
+fn getsockopt_rules() -> Vec<SeccompRule> {
+    [
+        libc::SO_ACCEPTCONN,
+        libc::SO_DOMAIN,
+        libc::SO_PROTOCOL,
+        libc::SO_TYPE,
+    ]
+    .into_iter()
+    .map(|p| {
+        and![
+            Cond::new(1, ArgLen::Dword, Eq, libc::SOL_SOCKET as u64).unwrap(),
+            Cond::new(2, ArgLen::Dword, Eq, p as u64).unwrap()
+        ]
+    })
+    .collect()
+}
+
+fn virtio_vhost_guest_thread_rules() -> Vec<(i64, Vec<SeccompRule>)> {
+    vec![
+        (libc::SYS_fstatfs, vec![]),
+        (libc::SYS_ioctl, create_virtio_mem_ioctl_seccomp_rule()),
+        (libc::SYS_recvfrom, vec![]),
+        (libc::SYS_sendmsg, vec![]),
+        (libc::SYS_getsockopt, getsockopt_rules()),
+    ]
+}
+
 fn get_seccomp_rules(thread_type: Thread) -> Vec<(i64, Vec<SeccompRule>)> {
     let mut rules = match thread_type {
         Thread::VirtioBalloon => virtio_balloon_thread_rules(),
@@ -345,6 +373,7 @@ fn get_seccomp_rules(thread_type: Thread) -> Vec<(i64, Vec<SeccompRule>)> {
         Thread::VirtioVhostNet => virtio_vhost_net_thread_rules(),
         Thread::VirtioVhostNetCtl => virtio_vhost_net_ctl_thread_rules(),
         Thread::VirtioVsock => virtio_vsock_thread_rules(),
+        Thread::VirtioVhostGuest => virtio_vhost_guest_thread_rules(),
         Thread::VirtioWatchdog => virtio_watchdog_thread_rules(),
     };
     rules.append(&mut virtio_thread_common());

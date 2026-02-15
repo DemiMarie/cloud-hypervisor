@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::env::consts;
+use std::ffi;
 
 use hypervisor::HypervisorType;
 use libc::{
@@ -731,7 +732,25 @@ fn main_thread_rules() -> Result<Vec<(i64, Vec<SeccompRule>)>, BackendError> {
         (libc::SYS_writev, vec![]),
     ])
 }
-
+fn getsockopt_rules() -> Result<(ffi::c_long, Vec<SeccompRule>), BackendError> {
+    Ok((
+        libc::SYS_getsockopt,
+        [
+            libc::SO_ACCEPTCONN,
+            libc::SO_DOMAIN,
+            libc::SO_PROTOCOL,
+            libc::SO_TYPE,
+        ]
+        .into_iter()
+        .map(|p| {
+            Ok(and![
+                Cond::new(1, ArgLen::Dword, Eq, libc::SOL_SOCKET as u64)?,
+                Cond::new(2, ArgLen::Dword, Eq, p as u64)?
+            ])
+        })
+        .collect::<Result<Vec<_>, _>>()?,
+    ))
+}
 // The filter containing the white listed syscall rules required by the VMM to
 // function.
 fn vmm_thread_rules(
@@ -765,10 +784,12 @@ fn vmm_thread_rules(
         (libc::SYS_fcntl, vec![]),
         (libc::SYS_fdatasync, vec![]),
         (libc::SYS_fstat, vec![]),
+        (libc::SYS_fstatfs, vec![]),
         (libc::SYS_fsync, vec![]),
         (libc::SYS_ftruncate, vec![]),
         #[cfg(target_arch = "aarch64")]
         (libc::SYS_faccessat, vec![]),
+        getsockopt_rules()?,
         #[cfg(target_arch = "aarch64")]
         (libc::SYS_newfstatat, vec![]),
         (libc::SYS_futex, vec![]),
