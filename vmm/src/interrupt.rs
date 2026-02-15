@@ -126,6 +126,9 @@ impl InterruptRoute {
         )
     }
 
+    // This is currently not used, but the upcoming vhost-guest feature
+    // will use it. Use #[allow(dead_code)] to suppress a compiler
+    // warning.
     fn set_notifier(&mut self, eventfd: Option<EventFd>, vm: &dyn hypervisor::Vm) -> Result<()> {
         let old_irqfd = replace(&mut self.irq_fd, eventfd);
         if self.registered {

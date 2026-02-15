@@ -34,6 +34,7 @@ mod thread_helper;
 pub mod transport;
 pub mod vdpa;
 pub mod vhost_user;
+pub mod virtio_vhost_user;
 pub mod vsock;
 pub mod watchdog;
 

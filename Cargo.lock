@@ -2743,6 +2743,7 @@ dependencies = [
  "vhost",
  "virtio-bindings",
  "virtio-queue",
+ "virtio-vhost-user",
  "vm-allocator",
  "vm-device",
  "vm-memory",
