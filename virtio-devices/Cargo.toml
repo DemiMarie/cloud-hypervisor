@@ -17,6 +17,7 @@ block = { path = "../block" }
 byteorder = { workspace = true }
 epoll = { workspace = true }
 event_monitor = { path = "../event_monitor" }
+fd-utils = { path = "../fd-utils" }
 hypervisor = { path = "../hypervisor" }
 libc = { workspace = true }
 log = { workspace = true }
@@ -38,6 +39,7 @@ vhost = { workspace = true, features = [
   "vhost-user-frontend",
   "vhost-vdpa",
 ] }
+vhost-guest = { path = "../vhost-guest" }
 virtio-bindings = { workspace = true }
 virtio-queue = { workspace = true }
 vm-allocator = { path = "../vm-allocator" }
