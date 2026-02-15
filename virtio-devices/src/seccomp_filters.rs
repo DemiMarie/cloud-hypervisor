@@ -33,6 +33,7 @@ pub enum Thread {
     VirtioVhostNetCtl,
     VirtioVsock,
     VirtioWatchdog,
+    VirtioVhostGuest,
 }
 
 /// Shorthand for chaining `SeccompCondition`s with the `and` operator  in a `SeccompRule`.
@@ -104,6 +105,15 @@ fn create_virtio_mem_ioctl_seccomp_rule() -> Vec<SeccompRule> {
         and![Cond::new(1, ArgLen::Dword, Eq, IOMMU_IOAS_MAP).unwrap()],
         and![Cond::new(1, ArgLen::Dword, Eq, IOMMU_IOAS_UNMAP).unwrap()],
     ]
+}
+
+fn create_virtio_vhost_guest_ioctl_seccomp_rule() -> Vec<SeccompRule> {
+    #[cfg(feature = "kvm")]
+    pub(super) const IOEVENTFD: u64 = 0x4040_ae79;
+    #[cfg(feature = "mshv")]
+    use hypervisor::mshv::mshv_ioctls::MSHV_IOEVENTFD as IOEVENTFD;
+
+    or![and![Cond::new(1, ArgLen::Dword, Eq, IOEVENTFD).unwrap()]]
 }
 
 fn virtio_balloon_thread_rules() -> Vec<(i64, Vec<SeccompRule>)> {
@@ -328,6 +338,85 @@ fn virtio_watchdog_thread_rules() -> Vec<(i64, Vec<SeccompRule>)> {
     ]
 }
 
+fn getsockopt_rules() -> Vec<SeccompRule> {
+    [
+        libc::SO_ACCEPTCONN,
+        libc::SO_DOMAIN,
+        libc::SO_PROTOCOL,
+        libc::SO_TYPE,
+    ]
+    .into_iter()
+    .map(|p| {
+        and![
+            Cond::new(1, ArgLen::Dword, Eq, libc::SOL_SOCKET as u64).unwrap(),
+            Cond::new(2, ArgLen::Dword, Eq, p as u64).unwrap()
+        ]
+    })
+    .collect()
+}
+
+fn virtio_vhost_guest_thread_rules() -> Vec<(i64, Vec<SeccompRule>)> {
+    vec![
+        (
+            libc::SYS_recvmsg,
+            or![and![
+                Cond::new(
+                    2,
+                    ArgLen::Dword,
+                    Eq,
+                    (libc::MSG_DONTWAIT
+                        | libc::MSG_CMSG_CLOEXEC
+                        | libc::MSG_TRUNC
+                        | libc::MSG_CTRUNC) as _
+                )
+                .unwrap()
+            ]],
+        ),
+        (
+            libc::SYS_sendto,
+            or![and![
+                Cond::new(
+                    3,
+                    ArgLen::Dword,
+                    Eq,
+                    (libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT) as _
+                )
+                .unwrap(),
+                Cond::new(4, ArgLen::Qword, Eq, 0).unwrap(),
+                Cond::new(5, ArgLen::Dword, Eq, 0).unwrap()
+            ]],
+        ),
+        (
+            libc::SYS_ioctl,
+            create_virtio_vhost_guest_ioctl_seccomp_rule(),
+        ),
+        (
+            libc::SYS_preadv2,
+            or![and![
+                Cond::new(2, ArgLen::Dword, Eq, 1).unwrap(),
+                Cond::new(3, ArgLen::Qword, Eq, u64::MAX).unwrap(),
+                Cond::new(5, ArgLen::Dword, Eq, libc::RWF_NOWAIT as _).unwrap()
+            ]],
+        ),
+        (libc::SYS_fstat, vec![]),
+        (libc::SYS_fstatfs, vec![]),
+        (
+            libc::SYS_accept4,
+            or![and![
+                Cond::new(3, ArgLen::Dword, Eq, libc::SOCK_CLOEXEC as _).unwrap()
+            ]],
+        ),
+        (
+            libc::SYS_newfstatat,
+            or![and![
+                Cond::new(3, ArgLen::Dword, Eq, libc::AT_EMPTY_PATH as _).unwrap()
+            ]],
+        ),
+        (libc::SYS_getsockopt, getsockopt_rules()),
+        (libc::SYS_readlinkat, vec![]),
+    ]
+}
+
 fn get_seccomp_rules(thread_type: Thread) -> Vec<(i64, Vec<SeccompRule>)> {
     let mut rules = match thread_type {
         Thread::VirtioBalloon => virtio_balloon_thread_rules(),
@@ -346,6 +435,7 @@ fn get_seccomp_rules(thread_type: Thread) -> Vec<(i64, Vec<SeccompRule>)> {
         Thread::VirtioVhostNet => virtio_vhost_net_thread_rules(),
         Thread::VirtioVhostNetCtl => virtio_vhost_net_ctl_thread_rules(),
         Thread::VirtioVsock => virtio_vsock_thread_rules(),
+        Thread::VirtioVhostGuest => virtio_vhost_guest_thread_rules(),
         Thread::VirtioWatchdog => virtio_watchdog_thread_rules(),
     };
     rules.append(&mut virtio_thread_common());
