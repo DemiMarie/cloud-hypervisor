@@ -38,6 +38,7 @@ vhost = { workspace = true, features = [
   "vhost-user-frontend",
   "vhost-vdpa",
 ] }
+vhost-guest = { path = "../vhost-guest" }
 virtio-bindings = { workspace = true }
 virtio-queue = { workspace = true }
 vm-allocator = { path = "../vm-allocator" }
