@@ -733,6 +733,18 @@ impl VirtioPciDevice {
             driver_auxiliary_notification_select: 0,
         };
 
+        // Set the device configuration space base address prior to activating
+        // it, so that it knows where to register its ioeventfds.
+        virtio_pci_device
+            .device
+            .lock()
+            .unwrap()
+            .set_config_address_base(
+                virtio_pci_device
+                    .configuration
+                    .get_bar_addr(VIRTIO_CONFIG_BAR_INDEX),
+            );
+
         // In case of a restore, we can activate the device, as we know at
         // this point the virtqueues are in the right state and the device is
         // ready to be activated, which will spawn each virtio worker thread.
@@ -1222,7 +1234,7 @@ impl PciDevice for VirtioPciDevice {
     ) -> result::Result<Vec<PciBarConfiguration>, PciDeviceError> {
         let mut bars = Vec::new();
         let device_clone = Arc::clone(&self.device);
-        let device = device_clone.lock().unwrap();
+        let mut device = device_clone.lock().unwrap();
 
         let mut settings_bar_addr = None;
         let mut use_64bit_bar = self.use_64bit_bar;
@@ -1332,6 +1344,7 @@ impl PciDevice for VirtioPciDevice {
         }
 
         self.bar_regions.clone_from(&bars);
+        device.set_config_address_base(virtio_pci_bar_addr.raw_value());
 
         Ok(bars)
     }
@@ -1364,6 +1377,15 @@ impl PciDevice for VirtioPciDevice {
                 *bar = bar.set_address(new_base);
             }
         }
+
+        // Set the device configuration space base address prior to activating
+        // it, so that if it has not already been activated, it knows where to
+        // register its ioeventfds when it does get activated.  After activation,
+        // this job is done by VirtioPciDevice::ioeventfds() instead.
+        self.device
+            .lock()
+            .unwrap()
+            .set_config_address_base(new_base);
 
         Ok(())
     }
