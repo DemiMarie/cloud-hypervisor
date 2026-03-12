@@ -679,6 +679,14 @@ impl VirtioPciDevice {
             num_doorbells,
         };
 
+        // Set the device configuration space base address prior to activating
+        // it, so that it knows where to register its ioeventfds.
+        virtio_pci_device
+            .device
+            .lock()
+            .unwrap()
+            .set_config_address_base(virtio_pci_device.config_bar_addr());
+
         // In case of a restore, we can activate the device, as we know at
         // this point the virtqueues are in the right state and the device is
         // ready to be activated, which will spawn each virtio worker thread.
@@ -1234,12 +1242,24 @@ impl PciDevice for VirtioPciDevice {
     }
 
     fn move_bar(&mut self, old_base: u64, new_base: u64) -> io::Result<()> {
+        let move_config_base = old_base == self.config_bar_addr();
         // We only update our idea of the bar in order to support free_bars() above.
         // The majority of the reallocation is done inside DeviceManager.
         for bar in self.bar_regions.iter_mut() {
             if bar.addr() == old_base {
                 *bar = bar.set_address(new_base);
             }
+        }
+
+        // Set the device configuration space base address prior to activating
+        // it, so that if it has not already been activated, it knows where to
+        // register its ioeventfds when it does get activated.  After activation,
+        // this job is done by VirtioPciDevice::ioeventfds() instead.
+        if move_config_base {
+            self.device
+                .lock()
+                .unwrap()
+                .set_config_address_base(new_base);
         }
 
         Ok(())
