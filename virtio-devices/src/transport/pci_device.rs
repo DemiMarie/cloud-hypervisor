@@ -36,6 +36,7 @@ use vm_migration::{Migratable, MigratableError, Pausable, Snapshot, Snapshottabl
 use vm_virtio::AccessPlatform;
 use vmm_sys_util::eventfd::EventFd;
 
+use super::IoeventfdError;
 use super::pci_common_config::VirtioPciCommonConfigState;
 use crate::transport::{VIRTIO_PCI_COMMON_CONFIG_ID, VirtioPciCommonConfig, VirtioTransport};
 use crate::{
@@ -919,14 +920,22 @@ impl VirtioPciDevice {
 }
 
 impl VirtioTransport for VirtioPciDevice {
-    fn ioeventfds(&self, base_addr: u64) -> impl Iterator<Item = (&EventFd, u64)> {
-        let notify_base = base_addr + NOTIFICATION_BAR_OFFSET;
-        self.queue_evts().iter().enumerate().map(move |(i, event)| {
-            (
+    fn ioeventfds(
+        &self,
+        old_base_addr: u64,
+        new_base_addr: u64,
+        cb: &mut dyn for<'a> FnMut(&'a EventFd, u64, u64) -> result::Result<(), IoeventfdError>,
+    ) -> result::Result<(), IoeventfdError> {
+        let old_notify_base = old_base_addr + NOTIFICATION_BAR_OFFSET;
+        let new_notify_base = new_base_addr + NOTIFICATION_BAR_OFFSET;
+        for (i, event) in self.queue_evts().iter().enumerate() {
+            cb(
                 event,
-                notify_base + i as u64 * u64::from(NOTIFY_OFF_MULTIPLIER),
-            )
-        })
+                old_notify_base + i as u64 * u64::from(NOTIFY_OFF_MULTIPLIER),
+                new_notify_base + i as u64 * u64::from(NOTIFY_OFF_MULTIPLIER),
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -1315,23 +1324,26 @@ impl PciDevice for VirtioPciDevice {
                 // spec explicitly allows driving the device purely through the PCI_CFG window, so
                 // honour a doorbell that arrives this way.
                 let mut signalled = false;
-                for (event, addr) in self.ioeventfds(base) {
+                let _ = self.ioeventfds(base, base, &mut |event, addr, _| {
                     if addr == base + offset {
                         event.write(1).ok();
                         signalled = true;
                     }
-                }
+                    Ok(())
+                });
                 if !signalled {
                     warn!("Notification BAR write matched no queue: offset = 0x{o:x}");
                 }
             }
             o if (DOORBELL_BAR_OFFSET..DOORBELL_BAR_OFFSET + DOORBELL_BAR_SIZE).contains(&o) => {
                 #[cfg(feature = "sev_snp")]
-                for (event, addr) in self.ioeventfds(base) {
+                self.ioeventfds(base, base, &mut |event, addr, _| {
                     if addr == base + offset {
                         event.write(1).unwrap();
                     }
-                }
+                    result::Result::Ok(())
+                })
+                .unwrap();
                 // Handled with ioeventfds.
                 #[cfg(not(feature = "sev_snp"))]
                 error!("Unexpected write to doorbell BAR: offset = 0x{o:x}");
