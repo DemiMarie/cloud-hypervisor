@@ -37,6 +37,12 @@ pub trait VirtioInterrupt: Send + Sync {
     fn notifier(&self, _int_type: VirtioInterruptType) -> Option<EventFd> {
         None
     }
+    fn set_notifier(
+        &self,
+        interrupt: u32,
+        eventfd: Option<EventFd>,
+        vm: &dyn hypervisor::Vm,
+    ) -> std::io::Result<()>;
 }
 
 #[derive(Clone)]
