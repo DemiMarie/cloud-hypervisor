@@ -8,6 +8,7 @@
 
 #![expect(dead_code, reason = "incomplete crate")]
 
+mod backend_request;
 mod mapping;
 mod queue_pair;
 
