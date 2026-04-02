@@ -6,15 +6,19 @@
 //! This implements a vhost-user device backend.  Documentation can be found at:
 //! https://github.com/DemiMarie/virtio-spec.git, branch virtio-vhost-user.
 
-#![expect(dead_code, reason = "incomplete crate")]
-
 mod backend_request;
+mod eventfd_checker;
+mod frontend_request;
 mod mapping;
 mod queue_pair;
 
 use std::os::fd::{AsRawFd as _, BorrowedFd};
 use std::{io, ptr};
 
+pub use backend_request::BackendRequestQueuePair;
+pub use frontend_request::{
+    FrontendRequestQueuePair, IoEventFds, MigrationFd, SUPPORTED_PROTOCOL_FEATURES, VM,
+};
 pub use mapping::{Allocator, Mapping, Region};
 pub use queue_pair::{FdRearm, Fds, Translate, VirtioVhostUserQueuePair};
 use vm_memory::ByteValued;

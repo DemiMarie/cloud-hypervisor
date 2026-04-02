@@ -17,8 +17,6 @@
 
 //! Mapping of frontend-provided memory into the guest.
 
-#![expect(dead_code, reason = "incomplete crate")]
-
 use std::collections::HashMap;
 use std::ffi::{c_long, c_ulong, c_void};
 use std::os::fd::{AsRawFd as _, BorrowedFd};
@@ -239,7 +237,15 @@ impl<T: Allocator> Mapping<T> {
             memory_size.try_into().unwrap(),
             mmap_offset.try_into().unwrap(),
         )
-        .map_err(Error::ReqHandlerError)?;
+        .map_err(|e| {
+            unmap_region_internal(
+                &self.region,
+                guest_offset,
+                region.memory_size.try_into().unwrap(),
+            )
+            .expect("TODO: what to do if munmap() fails???");
+            Error::ReqHandlerError(e)
+        })?;
         assert!(
             self.address_ranges
                 .insert(region_info, guest_offset)
