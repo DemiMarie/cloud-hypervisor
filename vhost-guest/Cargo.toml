@@ -12,6 +12,7 @@ byteorder = { workspace = true }
 epoll = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
+fd-utils = { path = "../fd-utils" }
 thiserror = { workspace = true }
 vhost = { workspace = true, features = [
   "vhost-user-backend",
