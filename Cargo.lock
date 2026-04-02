@@ -2681,6 +2681,7 @@ dependencies = [
  "anyhow",
  "byteorder",
  "epoll",
+ "fd-utils",
  "libc",
  "log",
  "thiserror",
