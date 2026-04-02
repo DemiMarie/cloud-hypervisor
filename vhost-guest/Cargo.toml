@@ -10,6 +10,7 @@ version = "0.1.0"
 anyhow = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
+fd-utils = { path = "../fd-utils" }
 thiserror = { workspace = true }
 vhost = { workspace = true, features = [
   "vhost-user-backend",

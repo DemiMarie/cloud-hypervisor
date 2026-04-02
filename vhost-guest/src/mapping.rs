@@ -173,10 +173,13 @@ impl<T: Allocator> Mapping<T> {
     }
 
     /// Reset the device
-    pub(super) fn reset(&mut self) -> Result<(), Error> {
+    pub(super) fn reset(&mut self, clear_log: bool) -> Result<(), Error> {
         let ranges = self.address_ranges.clone();
         for (region_info, mmap_offset) in ranges {
-            if region_info.guest_phys_addr == u64::MAX && region_info.user_addr == u64::MAX {
+            if !clear_log
+                && region_info.guest_phys_addr == u64::MAX
+                && region_info.user_addr == u64::MAX
+            {
                 // Log must survive reset.
                 continue;
             }
@@ -191,6 +194,7 @@ impl<T: Allocator> Mapping<T> {
         Ok(())
     }
 
+    /// Perform alignment checks, then map.
     pub(super) fn map_region(
         &mut self,
         region: VhostUserMemoryRegion,
@@ -200,6 +204,8 @@ impl<T: Allocator> Mapping<T> {
         self.map_region_without_alignment_checks(region, file)
     }
 
+    /// Perform the mapping with no alignment checks
+    /// (because they were done earlier).
     pub(super) fn map_region_without_alignment_checks(
         &mut self,
         region: VhostUserMemoryRegion,

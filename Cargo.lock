@@ -2425,6 +2425,7 @@ name = "vhost-guest"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fd-utils",
  "libc",
  "log",
  "thiserror",
