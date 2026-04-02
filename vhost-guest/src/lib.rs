@@ -8,6 +8,7 @@
 
 #![expect(dead_code, reason = "incomplete crate")]
 
+mod backend_request;
 mod mapping;
 mod no_overlap_mapping;
 mod queue_pair;
@@ -15,6 +16,7 @@ mod queue_pair;
 use std::os::fd::{AsRawFd as _, BorrowedFd};
 use std::{io, ptr};
 
+pub use backend_request::BackendRequestQueuePair;
 pub use mapping::{Allocator, Mapping, Region};
 pub use queue_pair::{FdRearm, Fds, Translate, VirtioVhostGuestQueuePair};
 use vm_memory::ByteValued;
