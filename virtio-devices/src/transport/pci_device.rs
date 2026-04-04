@@ -600,11 +600,11 @@ impl VirtioPciDevice {
         std::mem::drop(locked_device);
 
         let virtio_interrupt = Arc::new(VirtioInterruptMsix::new(
-            msix_config.clone(),
             common_config.msix_config.clone(),
             common_config.config_changed.clone(),
             common_config.msix_queues.clone(),
             interrupt_source_group.clone(),
+            msix_config.lock().unwrap().table_entries.len(),
         ));
 
         let mut virtio_pci_device = VirtioPciDevice {
@@ -863,7 +863,6 @@ impl VirtioTransport for VirtioPciDevice {
 }
 
 pub struct VirtioInterruptMsix {
-    msix_config: Arc<Mutex<MsixConfig>>,
     config_vector: Arc<AtomicU16>,
     config_changed: Arc<AtomicBool>,
     queues_vectors: Arc<Mutex<Vec<u16>>>,
@@ -873,15 +872,13 @@ pub struct VirtioInterruptMsix {
 
 impl VirtioInterruptMsix {
     pub fn new(
-        msix_config: Arc<Mutex<MsixConfig>>,
         config_vector: Arc<AtomicU16>,
         config_changed: Arc<AtomicBool>,
         queues_vectors: Arc<Mutex<Vec<u16>>>,
         interrupt_source_group: MaybeMutInterruptSourceGroup,
+        msix_table_size: usize,
     ) -> Self {
-        let msix_table_size = msix_config.lock().unwrap().table_entries.len();
         VirtioInterruptMsix {
-            msix_config,
             config_vector,
             config_changed,
             queues_vectors,
@@ -910,18 +907,6 @@ impl VirtioInterrupt for VirtioInterruptMsix {
 
         if vector as usize >= self.msix_table_size {
             warn!("MSI-X vector {vector} out of range, ignoring interrupt");
-            return Ok(());
-        }
-
-        let config = &mut self.msix_config.lock().unwrap();
-        let entry = &config.table_entries[vector as usize];
-        // In case the vector control register associated with the entry
-        // has its first bit set, this means the vector is masked and the
-        // device should not inject the interrupt.
-        // Instead, the Pending Bit Array table is updated to reflect there
-        // is a pending interrupt for this specific vector.
-        if config.masked() || entry.masked() {
-            config.set_pba_bit(vector, false);
             return Ok(());
         }
 
@@ -1389,11 +1374,11 @@ mod unit_tests {
         let queues_vectors = Arc::new(Mutex::new(vec![VIRTQ_MSI_NO_VECTOR; 1]));
 
         VirtioInterruptMsix::new(
-            msix_config,
             config_vector,
             config_changed,
             queues_vectors,
             MaybeMutInterruptSourceGroup::Immutable(isg),
+            msix_config.lock().unwrap().table_entries.len(),
         )
     }
 
@@ -1421,7 +1406,6 @@ mod unit_tests {
     fn trigger_with_valid_vector_fires() {
         let intr = make_msix_interrupt(2);
         intr.queues_vectors.lock().unwrap()[0] = 0;
-        intr.msix_config.lock().unwrap().set_msg_ctl(1u16 << 15);
         intr.trigger(VirtioInterruptType::Queue(0)).unwrap();
     }
 
