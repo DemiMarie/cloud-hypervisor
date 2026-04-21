@@ -28,7 +28,7 @@ impl AsyncIo for FixedVhdSync {
         self.raw_file_sync.notifier()
     }
 
-    fn read_vectored(
+    unsafe fn read_vectored(
         &mut self,
         offset: libc::off_t,
         iovecs: &[libc::iovec],
@@ -44,10 +44,11 @@ impl AsyncIo for FixedVhdSync {
             )));
         }
 
-        self.raw_file_sync.read_vectored(offset, iovecs, user_data)
+        // SAFETY: Safety preconditions for this function are the same as for read_vectored.
+        unsafe { self.raw_file_sync.read_vectored(offset, iovecs, user_data) }
     }
 
-    fn write_vectored(
+    unsafe fn write_vectored(
         &mut self,
         offset: libc::off_t,
         iovecs: &[libc::iovec],
@@ -63,7 +64,8 @@ impl AsyncIo for FixedVhdSync {
             )));
         }
 
-        self.raw_file_sync.write_vectored(offset, iovecs, user_data)
+        // SAFETY: Safety preconditions for this function are the same as for write_vectored.
+        unsafe { self.raw_file_sync.write_vectored(offset, iovecs, user_data) }
     }
 
     fn fsync(&mut self, user_data: Option<u64>) -> AsyncIoResult<()> {

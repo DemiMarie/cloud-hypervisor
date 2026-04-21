@@ -240,7 +240,7 @@ impl AsyncIo for QcowAsync {
         &self.eventfd
     }
 
-    fn read_vectored(
+    unsafe fn read_vectored(
         &mut self,
         offset: libc::off_t,
         iovecs: &[libc::iovec],
@@ -290,21 +290,24 @@ impl AsyncIo for QcowAsync {
     // state machine for COW (backing read, cluster allocation, data
     // write, L2 commit) with per request buffer lifetime tracking
     // and write ordering.
-    fn write_vectored(
+    unsafe fn write_vectored(
         &mut self,
         offset: libc::off_t,
         iovecs: &[libc::iovec],
         user_data: u64,
     ) -> AsyncIoResult<()> {
-        Self::cow_write_sync(
-            offset as u64,
-            iovecs,
-            &self.metadata,
-            &self.data_file,
-            &self.backing_file,
-            self.alignment,
-            self.cluster_size,
-        )?;
+        // SAFETY: Caller promises iovecs point to valid memory.
+        unsafe {
+            Self::cow_write_sync(
+                offset as u64,
+                iovecs,
+                &self.metadata,
+                &self.data_file,
+                &self.backing_file,
+                self.alignment,
+                self.cluster_size,
+            )
+        }?;
 
         let total_len: usize = iovecs.iter().map(|v| v.iov_len).sum();
         self.completion_list
@@ -428,15 +431,18 @@ impl AsyncIo for QcowAsync {
                 }
                 RequestType::Out => {
                     let total_len: usize = req.iovecs.iter().map(|v| v.iov_len).sum();
-                    Self::cow_write_sync(
-                        req.offset as u64,
-                        &req.iovecs,
-                        &self.metadata,
-                        &self.data_file,
-                        &self.backing_file,
-                        self.alignment,
-                        self.cluster_size,
-                    )?;
+                    // SAFETY: caller promises iovecs are valid and readable
+                    unsafe {
+                        Self::cow_write_sync(
+                            req.offset as u64,
+                            &req.iovecs,
+                            &self.metadata,
+                            &self.data_file,
+                            &self.backing_file,
+                            self.alignment,
+                            self.cluster_size,
+                        )
+                    }?;
                     sync_completions.push((req.user_data, total_len as i32));
                 }
                 _ => {
@@ -604,7 +610,11 @@ impl QcowAsync {
     }
 
     /// Write iovec data cluster-by-cluster with COW from backing file.
-    fn cow_write_sync(
+    ///
+    /// # Safety
+    ///
+    /// The iovecs must point to valid, readable memory.
+    unsafe fn cow_write_sync(
         address: u64,
         iovecs: &[libc::iovec],
         metadata: &QcowMetadata,
@@ -736,9 +746,8 @@ mod unit_tests {
             iov_base: data.as_ptr() as *mut libc::c_void,
             iov_len: data.len(),
         };
-        async_io
-            .write_vectored(offset as libc::off_t, &[iovec], 2)
-            .unwrap();
+        // SAFETY: the data is valid and we immediately wait for completion.
+        unsafe { async_io.write_vectored(offset as libc::off_t, &[iovec], 2) }.unwrap();
         let (user_data, result) = wait_for_completion(async_io.as_mut());
         assert_eq!(user_data, 2);
         assert_eq!(
@@ -755,9 +764,8 @@ mod unit_tests {
             iov_base: buf.as_mut_ptr() as *mut libc::c_void,
             iov_len: buf.len(),
         };
-        async_io
-            .read_vectored(offset as libc::off_t, &[iovec], 1)
-            .unwrap();
+        // SAFETY: iovec is valid and we wait for completion.
+        unsafe { async_io.read_vectored(offset as libc::off_t, &[iovec], 1) }.unwrap();
         let (user_data, result) = wait_for_completion(async_io.as_mut());
         assert_eq!(user_data, 1);
         assert_eq!(result as usize, len, "read should return requested length");
@@ -1155,7 +1163,8 @@ mod unit_tests {
                         iov_base: buf.as_mut_ptr() as *mut libc::c_void,
                         iov_len: buf.len(),
                     };
-                    async_io.read_vectored(0, &[iovec], 1).unwrap();
+                    // SAFETY: iovec is valid and we wait for completion.
+                    unsafe { async_io.read_vectored(0, &[iovec], 1) }.unwrap();
                     let (_, result) = wait_for_completion(async_io.as_mut());
                     assert_eq!(result as usize, cluster_size);
                     assert_eq!(buf, expected);

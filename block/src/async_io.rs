@@ -84,25 +84,43 @@ pub type AsyncIoResult<T> = std::result::Result<T, AsyncIoError>;
 
 pub trait AsyncIo: Send {
     fn notifier(&self) -> &EventFd;
-    fn read_vectored(
+    /// Read the provided iovecs from the given offset.
+    ///
+    /// # Safety
+    ///
+    /// The given iovecs must point to valid memory. This memory must remain
+    /// valid until all requests have completed.
+    unsafe fn read_vectored(
         &mut self,
         offset: libc::off_t,
         iovecs: &[libc::iovec],
         user_data: u64,
     ) -> AsyncIoResult<()>;
-    fn write_vectored(
+
+    /// Write the provided iovecs at the given offset.
+    ///
+    /// # Safety
+    ///
+    /// The given iovecs must point to valid memory. This memory must remain
+    /// valid until all requests have completed.
+    unsafe fn write_vectored(
         &mut self,
         offset: libc::off_t,
         iovecs: &[libc::iovec],
         user_data: u64,
     ) -> AsyncIoResult<()>;
+
     fn fsync(&mut self, user_data: Option<u64>) -> AsyncIoResult<()>;
     fn punch_hole(&mut self, offset: u64, length: u64, user_data: u64) -> AsyncIoResult<()>;
     fn write_zeroes(&mut self, offset: u64, length: u64, user_data: u64) -> AsyncIoResult<()>;
     fn next_completed_request(&mut self) -> Option<(u64, i32)>;
+
+    /// Whether batch requests are supported.
     fn batch_requests_enabled(&self) -> bool {
         false
     }
+
+    /// Submit batch requests.
     fn submit_batch_requests(&mut self, _batch_request: &[BatchRequest]) -> AsyncIoResult<()> {
         Ok(())
     }

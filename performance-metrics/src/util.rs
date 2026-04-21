@@ -111,19 +111,33 @@ pub fn deterministic_permutation(n: usize) -> Vec<usize> {
 }
 
 /// Submit `count` sequential read_vectored calls at `stride`-byte intervals.
-pub fn submit_reads(async_io: &mut dyn AsyncIo, count: usize, stride: u64, iovec: &[libc::iovec]) {
+pub unsafe fn submit_reads(
+    async_io: &mut dyn AsyncIo,
+    count: usize,
+    stride: u64,
+    iovec: &[libc::iovec],
+) {
     for i in 0..count {
-        async_io
-            .read_vectored((i as u64 * stride) as libc::off_t, iovec, i as u64)
+        // SAFETY: caller must promise the iovecs stay valid.
+        unsafe { async_io.read_vectored((i as u64 * stride) as libc::off_t, iovec, i as u64) }
             .expect("read_vectored failed");
     }
 }
 
 /// Submit `count` sequential write_vectored calls at `stride`-byte intervals.
-pub fn submit_writes(async_io: &mut dyn AsyncIo, count: usize, stride: u64, iovec: &[libc::iovec]) {
+///
+/// # Safety
+///
+/// iovecs must be readable and remain so until completion.
+pub unsafe fn submit_writes(
+    async_io: &mut dyn AsyncIo,
+    count: usize,
+    stride: u64,
+    iovec: &[libc::iovec],
+) {
     for i in 0..count {
-        async_io
-            .write_vectored((i as u64 * stride) as libc::off_t, iovec, i as u64)
+        // SAFETY: preconditions are promised by caller.
+        unsafe { async_io.write_vectored((i as u64 * stride) as libc::off_t, iovec, i as u64) }
             .expect("write_vectored failed");
     }
 }

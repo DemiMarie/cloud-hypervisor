@@ -358,8 +358,9 @@ impl Request {
                         request_type,
                     });
                 } else {
-                    disk_image
-                        .read_vectored(offset, &iovecs, user_data)
+                    // SAFETY: this isn't really sound unless the guest memory never changes
+                    // and is kept alive until Drop.
+                    unsafe { disk_image.read_vectored(offset, &iovecs, user_data) }
                         .map_err(ExecuteError::AsyncRead)?;
                 }
             }
@@ -372,8 +373,9 @@ impl Request {
                         request_type,
                     });
                 } else {
-                    disk_image
-                        .write_vectored(offset, &iovecs, user_data)
+                    // SAFETY: this isn't really sound unless the guest memory never changes
+                    // and is kept alive until Drop.
+                    unsafe { disk_image.write_vectored(offset, &iovecs, user_data) }
                         .map_err(ExecuteError::AsyncWrite)?;
                 }
             }

@@ -52,7 +52,7 @@ impl AsyncIo for RawFileAsync {
         self.alignment
     }
 
-    fn read_vectored(
+    unsafe fn read_vectored(
         &mut self,
         offset: libc::off_t,
         iovecs: &[libc::iovec],
@@ -61,7 +61,8 @@ impl AsyncIo for RawFileAsync {
         let (submitter, mut sq, _) = self.io_uring.split();
 
         // SAFETY: we know the file descriptor is valid and we
-        // relied on vm-memory to provide the buffer address.
+        // relied on the caller to provide the buffer address.
+        // Caller is responsible for waiting for completion.
         unsafe {
             sq.push(
                 &opcode::Readv::new(types::Fd(self.fd), iovecs.as_ptr(), iovecs.len() as u32)
@@ -80,7 +81,7 @@ impl AsyncIo for RawFileAsync {
         Ok(())
     }
 
-    fn write_vectored(
+    unsafe fn write_vectored(
         &mut self,
         offset: libc::off_t,
         iovecs: &[libc::iovec],
@@ -89,7 +90,8 @@ impl AsyncIo for RawFileAsync {
         let (submitter, mut sq, _) = self.io_uring.split();
 
         // SAFETY: we know the file descriptor is valid and we
-        // relied on vm-memory to provide the buffer address.
+        // rely on the caller to provide the buffer address.
+        // The caller is responsible for waiting for completion.
         unsafe {
             sq.push(
                 &opcode::Writev::new(types::Fd(self.fd), iovecs.as_ptr(), iovecs.len() as u32)

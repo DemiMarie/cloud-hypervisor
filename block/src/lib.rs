@@ -453,7 +453,10 @@ pub fn preallocate_disk<P: AsRef<Path>>(file: &File, path: P) {
 }
 
 pub trait AsyncAdaptor {
-    fn read_vectored_sync(
+    /// # Safety
+    ///
+    /// The iovecs must stay valid until completion.
+    unsafe fn read_vectored_sync(
         &mut self,
         offset: libc::off_t,
         iovecs: &[libc::iovec],

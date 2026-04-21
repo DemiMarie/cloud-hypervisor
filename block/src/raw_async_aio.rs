@@ -50,7 +50,7 @@ impl AsyncIo for RawFileAsyncAio {
         self.alignment
     }
 
-    fn read_vectored(
+    unsafe fn read_vectored(
         &mut self,
         offset: libc::off_t,
         iovecs: &[libc::iovec],
@@ -67,15 +67,16 @@ impl AsyncIo for RawFileAsyncAio {
             aio_resfd: self.eventfd.as_raw_fd() as u32,
             ..Default::default()
         }];
-        let _ = self
-            .ctx
-            .submit(&iocbs[..])
-            .map_err(AsyncIoError::ReadVectored)?;
+        // SAFETY: Caller promises that the iovecs are valid and
+        // that they will stay valid until it has waited for I/O
+        // completion.
+        #[allow(unused_unsafe)]
+        let _ = unsafe { self.ctx.submit(&iocbs[..]) }.map_err(AsyncIoError::ReadVectored)?;
 
         Ok(())
     }
 
-    fn write_vectored(
+    unsafe fn write_vectored(
         &mut self,
         offset: libc::off_t,
         iovecs: &[libc::iovec],
@@ -92,10 +93,12 @@ impl AsyncIo for RawFileAsyncAio {
             aio_resfd: self.eventfd.as_raw_fd() as u32,
             ..Default::default()
         }];
-        let _ = self
-            .ctx
-            .submit(&iocbs[..])
-            .map_err(AsyncIoError::WriteVectored)?;
+        // SAFETY: We know the fd is valid.
+        // The caller promises that the iovecs are valid and
+        // that they will stay valid until it has waited for I/O
+        // completion.
+        #[allow(unused_unsafe)]
+        let _ = unsafe { self.ctx.submit(&iocbs[..]) }.map_err(AsyncIoError::WriteVectored)?;
 
         Ok(())
     }
@@ -110,7 +113,9 @@ impl AsyncIo for RawFileAsyncAio {
                 aio_resfd: self.eventfd.as_raw_fd() as u32,
                 ..Default::default()
             }];
-            let _ = self.ctx.submit(&iocbs[..]).map_err(AsyncIoError::Fsync)?;
+            // SAFETY: We know the fd is valid.
+            #[allow(unused_unsafe)]
+            let _ = unsafe { self.ctx.submit(&iocbs[..]) }.map_err(AsyncIoError::Fsync)?;
         } else {
             // SAFETY: FFI call with a valid fd
             unsafe { libc::fsync(self.fd) };
