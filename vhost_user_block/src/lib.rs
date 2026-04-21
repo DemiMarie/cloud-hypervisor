@@ -123,19 +123,19 @@ impl VhostUserBlkThread {
     ) -> bool {
         let mut used_descs = false;
 
-        while let Some(mut desc_chain) = vring
-            .get_queue_mut()
-            .pop_descriptor_chain(self.mem.memory())
-        {
+        let mem = self.mem.memory();
+        while let Some(desc_chain) = vring.get_queue_mut().pop_descriptor_chain(mem.clone()) {
             debug!("got an element in the queue");
-            let len = match Request::parse(&mut desc_chain, None) {
+            let memory = desc_chain.memory().clone();
+            let head_index = desc_chain.head_index();
+            let len = match Request::parse(desc_chain, None) {
                 Ok(mut request) => {
                     debug!("element is a valid request");
                     request.writeback = self.writeback.load(Ordering::Acquire);
                     let (status, len) = match request.execute(
                         &mut self.disk_image.lock().unwrap().deref_mut(),
                         self.disk_nsectors,
-                        desc_chain.memory(),
+                        request.memory(),
                         &self.serial,
                     ) {
                         Ok(_) if request.request_type() == RequestType::GetDeviceId => {
@@ -144,7 +144,7 @@ impl VhostUserBlkThread {
                         Ok(l) => (VIRTIO_BLK_S_OK as u8, l + 1),
                         Err(e) => (e.status(), 1),
                     };
-                    desc_chain
+                    request
                         .memory()
                         .write_obj(status, request.status_addr())
                         .unwrap();
@@ -158,7 +158,7 @@ impl VhostUserBlkThread {
 
             vring
                 .get_queue_mut()
-                .add_used(desc_chain.memory(), desc_chain.head_index(), len)
+                .add_used(&memory, head_index, len)
                 .unwrap();
             used_descs = true;
         }

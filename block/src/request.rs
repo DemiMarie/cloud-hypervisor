@@ -10,7 +10,6 @@
 
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::marker::PhantomData;
 use std::mem;
 use std::time::Instant;
 
@@ -24,7 +23,7 @@ use virtio_queue::DescriptorChain;
 use vm_memory::bitmap::Bitmap;
 use vm_memory::{
     Address as _, Bytes as _, GuestAddress, GuestMemory as _, GuestMemoryError,
-    GuestMemoryLoadGuard,
+    GuestMemoryLoadGuard, GuestRegionCollection, GuestRegionMmap,
 };
 use vm_virtio::{AccessPlatform, Translatable as _};
 
@@ -86,7 +85,7 @@ pub struct Request<B: Bitmap + 'static> {
     pub writeback: bool,
     aligned_operations: SmallVec<[AlignedOperation; DEFAULT_DESCRIPTOR_VEC_SIZE]>,
     start: Instant,
-    _phantom: PhantomData<B>,
+    desc_chain: DescriptorChain<GuestMemoryLoadGuard<vm_memory::GuestMemoryMmap<B>>>,
 }
 
 impl<B: Bitmap + 'static> std::fmt::Debug for Request<B> {
@@ -104,8 +103,12 @@ impl<B: Bitmap + 'static> std::fmt::Debug for Request<B> {
 }
 
 impl<B: Bitmap + 'static> Request<B> {
+    pub fn memory(&self) -> &GuestRegionCollection<GuestRegionMmap<B>> {
+        self.desc_chain.memory()
+    }
+
     pub fn parse(
-        desc_chain: &mut DescriptorChain<GuestMemoryLoadGuard<vm_memory::GuestMemoryMmap<B>>>,
+        mut desc_chain: DescriptorChain<GuestMemoryLoadGuard<vm_memory::GuestMemoryMmap<B>>>,
         access_platform: Option<&dyn AccessPlatform>,
     ) -> Result<Request<B>, Error> {
         let hdr_desc = desc_chain
@@ -133,11 +136,12 @@ impl<B: Bitmap + 'static> Request<B> {
             writeback: true,
             aligned_operations: SmallVec::with_capacity(DEFAULT_DESCRIPTOR_VEC_SIZE),
             start: Instant::now(),
-            _phantom: PhantomData,
+            desc_chain,
         };
 
         let status_desc;
-        let mut desc = desc_chain
+        let mut desc = req
+            .desc_chain
             .next()
             .ok_or(Error::DescriptorChainTooShort)
             .inspect_err(|_| {
@@ -169,7 +173,8 @@ impl<B: Bitmap + 'static> Request<B> {
                         .map_err(|e| Error::GuestMemory(GuestMemoryError::IOError(e)))?,
                     desc.len(),
                 ));
-                desc = desc_chain
+                desc = req
+                    .desc_chain
                     .next()
                     .ok_or(Error::DescriptorChainTooShort)
                     .inspect_err(|_| {
@@ -268,7 +273,6 @@ impl<B: Bitmap + 'static> Request<B> {
 
     pub fn execute_async(
         &mut self,
-        mem: &vm_memory::GuestMemoryMmap<B>,
         disk_nsectors: u64,
         disk_image: &mut dyn AsyncIo,
         serial: &[u8],
@@ -279,6 +283,7 @@ impl<B: Bitmap + 'static> Request<B> {
         let request_type = self.request_type;
         let offset = (sector << SECTOR_SHIFT) as libc::off_t;
         let alignment = disk_image.alignment();
+        let mem = self.desc_chain.memory();
 
         let mut iovecs: SmallVec<[libc::iovec; DEFAULT_DESCRIPTOR_VEC_SIZE]> =
             SmallVec::with_capacity(self.data_descriptors.len());
@@ -374,8 +379,11 @@ impl<B: Bitmap + 'static> Request<B> {
                         request_type,
                     });
                 } else {
-                    // SAFETY: this isn't really sound unless the guest memory never changes
-                    // and is kept alive until Drop.
+                    // SAFETY: either the guest memory is kept alive until
+                    // I/O completion, or complete_async() is not called.
+                    // In the latter case, the pages will either be freed
+                    // only with munmap() or they will be leaked.  Since
+                    // Linux grabbed the pages at submission time, this is safe.
                     unsafe { disk_image.read_vectored(offset, &iovecs, user_data) }
                         .map_err(ExecuteError::AsyncRead)?;
                 }

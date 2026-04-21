@@ -241,7 +241,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
         let mut batch_inflight_requests = Vec::new();
 
         loop {
-            let mut desc_chain = match queue.iter(self.mem.memory()) {
+            let desc_chain = match queue.iter(self.mem.memory()) {
                 Ok(mut iter) => match iter.next() {
                     Some(c) => c,
                     None => break,
@@ -252,7 +252,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
                 }
             };
             let head_index = desc_chain.head_index();
-            let mut request = Request::parse(&mut desc_chain, self.access_platform.as_deref())
+            let mut request = Request::parse(desc_chain, self.access_platform.as_deref())
                 .map_err(Error::RequestParsing)?;
 
             // For virtio spec compliance
@@ -263,7 +263,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
                 Self::check_request(self.acked_features, &request, self.disable_sector0_writes)
             {
                 warn!("Request check failed: {request:x?} {e:?}");
-                desc_chain
+                request
                     .memory()
                     .write_obj(VIRTIO_BLK_S_IOERR, request.status_addr())
                     .map_err(Error::RequestStatus)?;
@@ -271,7 +271,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
                 // If no asynchronous operation has been submitted, we can
                 // simply return the used descriptor.
                 queue
-                    .add_used(desc_chain.memory(), head_index, 1)
+                    .add_used(request.memory(), head_index, 1)
                     .map_err(Error::QueueAddUsed)?;
                 queue
                     .enable_notification(self.mem.memory().deref())
@@ -313,7 +313,6 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
             request.writeback = self.writeback.load(Ordering::Acquire);
 
             let result = request.execute_async(
-                desc_chain.memory(),
                 self.disk_nsectors.load(Ordering::SeqCst),
                 self.disk_image.as_mut(),
                 &self.serial,
@@ -347,7 +346,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
                     }
                 };
 
-                desc_chain
+                request
                     .memory()
                     .write_obj(status as u8, request.status_addr())
                     .map_err(Error::RequestStatus)?;
@@ -362,7 +361,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
                 // If no asynchronous operation has been submitted, we can
                 // simply return the used descriptor.
                 queue
-                    .add_used(desc_chain.memory(), head_index, len)
+                    .add_used(request.memory(), head_index, len)
                     .map_err(Error::QueueAddUsed)?;
                 queue
                     .enable_notification(self.mem.memory().deref())
