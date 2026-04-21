@@ -168,6 +168,7 @@ struct BlockEpollHandler {
     acked_features: u64,
     disable_sector0_writes: bool,
     device_status: Arc<AtomicU8>,
+    queue_size: u16,
     user_data: u64,
 }
 
@@ -241,7 +242,11 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
         let mut batch_requests = Vec::new();
         let mut batch_inflight_requests = Vec::new();
 
-        loop {
+        while self.inflight_requests.len()
+            < usize::from(self.queue_size)
+                .checked_sub(batch_requests.len())
+                .expect("batch requests length limited by queue size")
+        {
             let desc_chain = match queue.iter(self.mem.memory()) {
                 Ok(mut iter) => match iter.next() {
                     Some(c) => c,
@@ -1164,6 +1169,7 @@ impl VirtioDevice for Block {
                 acked_features: self.common.acked_features,
                 disable_sector0_writes: self.disable_sector0_writes,
                 device_status: self.device_status.clone(),
+                queue_size,
                 user_data: 0,
             };
 
