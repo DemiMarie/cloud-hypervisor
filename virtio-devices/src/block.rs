@@ -28,7 +28,7 @@ use block::{
     build_serial, fcntl,
 };
 use event_monitor::event;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use rate_limiter::TokenType;
 use rate_limiter::group::{RateLimiterGroup, RateLimiterGroupHandle};
 use seccompiler::SeccompAction;
@@ -151,8 +151,8 @@ impl Default for BlockCounters {
 struct BlockEpollHandler {
     queue_index: u16,
     queue: Queue,
-    mem: GuestMemoryAtomic<GuestMemoryMmap>,
     disk_image: Box<dyn AsyncIo>,
+    mem: GuestMemoryAtomic<GuestMemoryMmap>,
     disk_nsectors: Arc<AtomicU64>,
     interrupt_cb: Arc<dyn VirtioInterrupt>,
     serial: Vec<u8>,
@@ -161,13 +161,14 @@ struct BlockEpollHandler {
     writeback: Arc<AtomicBool>,
     counters: BlockCounters,
     queue_evt: EventFd,
-    inflight_requests: VecDeque<(u16, Request)>,
+    inflight_requests: VecDeque<(u64, u16, Request)>,
     rate_limiter: Option<RateLimiterGroupHandle>,
     access_platform: Option<Arc<dyn AccessPlatform>>,
     host_cpus: Option<Vec<usize>>,
     acked_features: u64,
     disable_sector0_writes: bool,
     device_status: Arc<AtomicU8>,
+    user_data: u64,
 }
 
 fn has_feature(features: u64, feature_flag: u64) -> bool {
@@ -311,13 +312,15 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
             }
 
             request.writeback = self.writeback.load(Ordering::Acquire);
-
+            let user_data = self.user_data;
+            assert_ne!(self.user_data, u64::MAX);
+            self.user_data += 1;
             let result = request.execute_async(
                 self.disk_nsectors.load(Ordering::SeqCst),
                 self.disk_image.as_mut(),
                 &self.serial,
                 self.disable_sector0_writes,
-                head_index.into(),
+                user_data,
             );
 
             if let Ok(ExecuteAsync {
@@ -336,7 +339,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
                         }
                     }
                 }
-                batch_inflight_requests.push((head_index, request));
+                batch_inflight_requests.push((user_data, head_index, request));
             } else {
                 let status = match result {
                     Ok(_) => VIRTIO_BLK_S_OK,
@@ -369,20 +372,20 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
             }
         }
 
+        trace!("Submitting {} requests in batch", batch_requests.len());
         match self.disk_image.submit_batch_requests(&batch_requests) {
             Ok(()) => {
                 self.inflight_requests.extend(batch_inflight_requests);
             }
             Err(e) => {
                 // If batch submission fails, report VIRTIO_BLK_S_IOERR for all requests.
-                for (user_data, request) in batch_inflight_requests {
+                for (_, head_index, request) in batch_inflight_requests {
                     warn!("Request failed with batch submission: {request:x?} {e:?}");
-                    let desc_index = user_data;
                     let mem = self.mem.memory();
                     mem.write_obj(VIRTIO_BLK_S_IOERR as u8, request.status_addr())
                         .map_err(Error::RequestStatus)?;
                     queue
-                        .add_used(mem.deref(), desc_index, 1)
+                        .add_used(mem.deref(), head_index, 1)
                         .map_err(Error::QueueAddUsed)?;
                     queue
                         .enable_notification(mem.deref())
@@ -419,7 +422,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
     }
 
     #[inline]
-    fn find_inflight_request(&mut self, completed_head: u16) -> Result<Request> {
+    fn find_inflight_request(&mut self, completed_head: u64) -> (u16, Request) {
         // This loop neatly handles the fast path where the completions are
         // in order (it turns into just a pop_front()) and the 1% of the time
         // (analysis during boot) where slight out of ordering has been
@@ -430,13 +433,15 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
         // This is a O(1) operation and is prepared for the future as it it likely
         // the next completion would be for the one that was skipped which will
         // now be the new front.
-        for (i, (head, _)) in self.inflight_requests.iter().enumerate() {
+        for (i, (head, _, _)) in self.inflight_requests.iter().enumerate() {
             if head == &completed_head {
-                return Ok(self.inflight_requests.swap_remove_front(i).unwrap().1);
+                let req = self.inflight_requests.swap_remove_front(i).unwrap();
+                trace!("Completed req with user data {} and head {}", req.0, req.1);
+                return (req.1, req.2);
             }
         }
 
-        Err(Error::MissingEntryRequestList)
+        panic!("Request not found, I/O must have returned bad user data number {completed_head}!")
     }
 
     fn process_queue_complete(&mut self) -> Result<()> {
@@ -450,12 +455,11 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
         let mut write_ops = Wrapping(0);
 
         while let Some((user_data, result)) = self.disk_image.next_completed_request() {
-            let desc_index = user_data as u16;
+            let (head_index, mut request) = self.find_inflight_request(user_data);
 
-            let mut request = self.find_inflight_request(desc_index)?;
-
-            // SAFETY: the I/O just completed.
-            unsafe { request.complete_async() }.map_err(Error::RequestCompleting)?;
+            // SAFETY: User data fields are unique (a 64-bit counter),
+            // so the underlying I/O has, in fact, completed.
+            unsafe { request.complete_async().map_err(Error::RequestCompleting) }?;
 
             let latency = request.start().elapsed().as_micros() as u64;
             let read_ops_last = self.counters.read_ops.load(Ordering::Relaxed);
@@ -559,7 +563,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
             let queue = &mut self.queue;
 
             queue
-                .add_used(mem.deref(), desc_index, len)
+                .add_used(mem.deref(), head_index, len)
                 .map_err(Error::QueueAddUsed)?;
             queue
                 .enable_notification(mem.deref())
@@ -1160,6 +1164,7 @@ impl VirtioDevice for Block {
                 acked_features: self.common.acked_features,
                 disable_sector0_writes: self.disable_sector0_writes,
                 device_status: self.device_status.clone(),
+                user_data: 0,
             };
 
             let paused = self.common.paused.clone();
