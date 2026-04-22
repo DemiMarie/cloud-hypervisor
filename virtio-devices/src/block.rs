@@ -251,6 +251,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
                     return Ok(());
                 }
             };
+            let head_index = desc_chain.head_index();
             let mut request = Request::parse(&mut desc_chain, self.access_platform.as_deref())
                 .map_err(Error::RequestParsing)?;
 
@@ -270,7 +271,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
                 // If no asynchronous operation has been submitted, we can
                 // simply return the used descriptor.
                 queue
-                    .add_used(desc_chain.memory(), desc_chain.head_index(), 1)
+                    .add_used(desc_chain.memory(), head_index, 1)
                     .map_err(Error::QueueAddUsed)?;
                 queue
                     .enable_notification(self.mem.memory().deref())
@@ -317,7 +318,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
                 self.disk_image.as_mut(),
                 &self.serial,
                 self.disable_sector0_writes,
-                desc_chain.head_index() as u64,
+                head_index.into(),
             );
 
             if let Ok(ExecuteAsync {
@@ -336,7 +337,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
                         }
                     }
                 }
-                batch_inflight_requests.push((desc_chain.head_index(), request));
+                batch_inflight_requests.push((head_index, request));
             } else {
                 let status = match result {
                     Ok(_) => VIRTIO_BLK_S_OK,
@@ -361,7 +362,7 @@ Setting device status to 'NEEDS_RESET' and stopping processing queues until rese
                 // If no asynchronous operation has been submitted, we can
                 // simply return the used descriptor.
                 queue
-                    .add_used(desc_chain.memory(), desc_chain.head_index(), len)
+                    .add_used(desc_chain.memory(), head_index, len)
                     .map_err(Error::QueueAddUsed)?;
                 queue
                     .enable_notification(self.mem.memory().deref())
