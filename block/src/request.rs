@@ -77,7 +77,6 @@ pub struct ExecuteAsync {
     pub batch_request: Option<BatchRequest>,
 }
 
-#[derive(Debug)]
 pub struct Request {
     request_type: RequestType,
     sector: u64,
@@ -86,6 +85,20 @@ pub struct Request {
     pub writeback: bool,
     aligned_operations: SmallVec<[AlignedOperation; DEFAULT_DESCRIPTOR_VEC_SIZE]>,
     start: Instant,
+}
+
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("request_type", &self.request_type)
+            .field("sector", &self.sector)
+            .field("data_descriptors", &self.data_descriptors)
+            .field("status_addr", &self.status_addr)
+            .field("writeback", &self.writeback)
+            .field("aligned_operations", &self.aligned_operations)
+            .field("start", &self.start)
+            .finish()
+    }
 }
 
 impl Request {
