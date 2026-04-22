@@ -28,6 +28,10 @@ pub(crate) enum TargetApi {
     DBusApi(String, String),
 }
 
+pub(crate) fn call<F: FnOnce() -> R + std::panic::UnwindSafe, R>(f: F) -> std::thread::Result<R> {
+    Ok(f())
+}
+
 impl TargetApi {
     pub(crate) fn new_http_api(tmp_dir: &TempDir) -> Self {
         Self::HttpApi(temp_api_path(tmp_dir))
@@ -383,7 +387,7 @@ pub(crate) fn setup_ovs_dpdk_guests(
     #[cfg(target_arch = "aarch64")]
     let guest_net_iface = "enp0s5";
 
-    let r = std::panic::catch_unwind(|| {
+    let r = call(|| {
         guest1.wait_vm_boot().unwrap();
 
         guest1
@@ -428,7 +432,7 @@ pub(crate) fn setup_ovs_dpdk_guests(
                     .spawn()
                     .unwrap();
 
-    let r = std::panic::catch_unwind(|| {
+    let r = call(|| {
         guest2.wait_vm_boot().unwrap();
 
         guest2

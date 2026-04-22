@@ -87,11 +87,16 @@ sudo chmod a+rwX /dev/hugepages
 export RUST_BACKTRACE=1
 export RUSTFLAGS="$RUSTFLAGS"
 
-TEST_THREADS_DEFAULT="$(($(nproc) / 4))"
+TEST_THREADS_DEFAULT=$(nproc)
+if ! [[ "$TEST_THREADS_DEFAULT" =~ ^[1-9][0-9]{0,8}$ ]]; then
+    echo 'Bad output from nproc' >&2
+    exit 1
+fi
+TEST_THREADS_DEFAULT="$((TEST_THREADS_DEFAULT / 8))"
 if ! [[ "${PARALLEL_INTEGRATION_TESTS_NUM:-}" =~ ^[1-9][0-9]*$ ]]; then
     PARALLEL_INTEGRATION_TESTS_NUM="${TEST_THREADS_DEFAULT}"
 fi
-echo "nproc:$(nproc), parallel_integration_tests:${PARALLEL_INTEGRATION_TESTS_NUM}"
+echo "nproc:$TEST_THREADS_DEFAULT, parallel_integration_tests:${PARALLEL_INTEGRATION_TESTS_NUM}"
 
 time cargo nextest run $test_features --retries 3 --no-fail-fast --no-tests=pass --test-threads="${PARALLEL_INTEGRATION_TESTS_NUM}" "live_migration_parallel::$test_filter" -- ${test_binary_args[*]}
 
