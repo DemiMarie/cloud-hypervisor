@@ -183,6 +183,9 @@ pub struct QcowAsync {
     io_uring: IoUring,
     eventfd: EventFd,
     completion_list: VecDeque<(u64, i32)>,
+    /// DO NOT use smallvec here.  The pointers inside the Vec must remain
+    /// stable when the VecDeque reallocates.
+    iovecs: VecDeque<Vec<libc::iovec>>,
 }
 
 impl QcowAsync {
@@ -211,6 +214,7 @@ impl QcowAsync {
             io_uring,
             eventfd,
             completion_list: VecDeque::new(),
+            iovecs: VecDeque::new(),
         })
     }
 
@@ -234,6 +238,11 @@ impl QcowAsync {
         }
     }
 }
+
+// SAFETY: The pointers in the VecDeque
+// are not dereferenced in a way that could
+// cause data races.
+unsafe impl Send for QcowAsync {}
 
 impl AsyncIo for QcowAsync {
     fn notifier(&self) -> &EventFd {
@@ -261,8 +270,15 @@ impl AsyncIo for QcowAsync {
         )? {
             let fd = self.data_file.as_raw_fd();
             let (submitter, mut sq, _) = self.io_uring.split();
-
+            // Convert the iovecs to a plain Vec and store it in a queue, where it
+            // will not be freed until the I/O has been submitted to the kernel.
+            self.iovecs.push_back(iovecs.to_vec());
+            let iovecs = self.iovecs.back().unwrap();
             // SAFETY: fd is valid and iovecs point to valid guest memory.
+            // Furthermore, the iovecs are in a queue from which they will
+            // not be removed until I/O has been submitted, and they are
+            // behind an indirection (Vec) and so will not be moved when the
+            // queue reallocates.
             unsafe {
                 sq.push(
                     &opcode::Readv::new(types::Fd(fd), iovecs.as_ptr(), iovecs.len() as u32)
@@ -274,9 +290,7 @@ impl AsyncIo for QcowAsync {
                     AsyncIoError::ReadVectored(Error::other("Submission queue is full"))
                 })?;
             };
-
-            sq.sync();
-            submitter.submit().map_err(AsyncIoError::ReadVectored)?;
+            submit_iovecs(&submitter, sq, &mut self.iovecs).map_err(AsyncIoError::ReadVectored)?;
         } else {
             self.completion_list
                 .push_back((user_data, total_len as i32));
@@ -395,13 +409,18 @@ impl AsyncIo for QcowAsync {
             match req.request_type {
                 RequestType::In => {
                     let total_len: usize = req.iovecs.iter().map(|v| v.iov_len).sum();
+                    let offset = req.offset;
+                    let user_data = req.user_data;
+                    self.iovecs.push_back(req.iovecs.to_vec());
+                    // Shadow the original req variable to prevent accidental use.
+                    let req = self.iovecs.back().unwrap();
 
                     if let Some(host_offset) = Self::resolve_read(
                         &self.metadata,
                         &self.data_file,
                         &self.backing_file,
-                        req.offset as u64,
-                        &req.iovecs,
+                        offset as u64,
+                        req,
                         total_len,
                         self.alignment,
                         self.cluster_size,
@@ -409,16 +428,16 @@ impl AsyncIo for QcowAsync {
                     )? {
                         let fd = self.data_file.as_raw_fd();
                         // SAFETY: fd is valid and iovecs point to valid guest memory.
+                        // Furthermore, the iovecs are in a queue from which they will
+                        // not be removed until I/O has been submitted, and they are
+                        // behind an indirection (Vec) and so will not be moved when the
+                        // queue reallocates..
                         unsafe {
                             sq.push(
-                                &opcode::Readv::new(
-                                    types::Fd(fd),
-                                    req.iovecs.as_ptr(),
-                                    req.iovecs.len() as u32,
-                                )
-                                .offset(host_offset)
-                                .build()
-                                .user_data(req.user_data),
+                                &opcode::Readv::new(types::Fd(fd), req.as_ptr(), req.len() as u32)
+                                    .offset(host_offset)
+                                    .build()
+                                    .user_data(user_data),
                             )
                             .map_err(|_| {
                                 AsyncIoError::ReadVectored(Error::other("Submission queue is full"))
@@ -426,7 +445,7 @@ impl AsyncIo for QcowAsync {
                         }
                         needs_submit = true;
                     } else {
-                        sync_completions.push((req.user_data, total_len as i32));
+                        sync_completions.push((user_data, total_len as i32));
                     }
                 }
                 RequestType::Out => {
@@ -452,9 +471,7 @@ impl AsyncIo for QcowAsync {
         }
 
         if needs_submit {
-            sq.sync();
-            submitter
-                .submit()
+            submit_iovecs(&submitter, sq, &mut self.iovecs)
                 .map_err(AsyncIoError::SubmitBatchRequests)?;
         }
 
@@ -467,6 +484,18 @@ impl AsyncIo for QcowAsync {
 
         Ok(())
     }
+}
+
+fn submit_iovecs(
+    submitter: &io_uring::Submitter<'_>,
+    mut sq: io_uring::SubmissionQueue<'_>,
+    iovecs: &mut VecDeque<Vec<libc::iovec>>,
+) -> Result<(), std::io::Error> {
+    sq.sync();
+    for _ in 0..submitter.submit()? {
+        iovecs.pop_front().unwrap();
+    }
+    Ok(())
 }
 
 impl QcowAsync {
