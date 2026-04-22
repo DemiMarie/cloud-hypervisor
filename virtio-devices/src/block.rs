@@ -24,8 +24,8 @@ use block::disk_file::AsyncFullDiskFile;
 use block::error::BlockError;
 use block::fcntl::{LockError, LockGranularity, LockGranularityChoice, LockType, get_lock_state};
 use block::{
-    ExecuteAsync, ExecuteError, MAX_DISCARD_WRITE_ZEROES_SEG, Request, RequestType,
-    VirtioBlockConfig, build_serial, fcntl,
+    ExecuteAsync, ExecuteError, MAX_DISCARD_WRITE_ZEROES_SEG, RequestType, VirtioBlockConfig,
+    build_serial, fcntl,
 };
 use event_monitor::event;
 use log::{debug, error, info, warn};
@@ -51,6 +51,8 @@ use super::{
 use crate::seccomp_filters::Thread;
 use crate::thread_helper::spawn_virtio_thread;
 use crate::{GuestMemoryMmap, VirtioInterrupt};
+
+type Request = block::Request<vm_memory::bitmap::AtomicBitmap>;
 
 const SECTOR_SHIFT: u8 = 9;
 pub const SECTOR_SIZE: u64 = 0x01 << SECTOR_SHIFT;

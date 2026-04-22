@@ -10,6 +10,7 @@
 
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::marker::PhantomData;
 use std::mem;
 use std::time::Instant;
 
@@ -77,7 +78,7 @@ pub struct ExecuteAsync {
     pub batch_request: Option<BatchRequest>,
 }
 
-pub struct Request {
+pub struct Request<B: Bitmap + 'static> {
     request_type: RequestType,
     sector: u64,
     data_descriptors: SmallVec<[(GuestAddress, u32); DEFAULT_DESCRIPTOR_VEC_SIZE]>,
@@ -85,9 +86,10 @@ pub struct Request {
     pub writeback: bool,
     aligned_operations: SmallVec<[AlignedOperation; DEFAULT_DESCRIPTOR_VEC_SIZE]>,
     start: Instant,
+    _phantom: PhantomData<B>,
 }
 
-impl std::fmt::Debug for Request {
+impl<B: Bitmap + 'static> std::fmt::Debug for Request<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Request")
             .field("request_type", &self.request_type)
@@ -101,11 +103,11 @@ impl std::fmt::Debug for Request {
     }
 }
 
-impl Request {
-    pub fn parse<B: Bitmap + 'static>(
+impl<B: Bitmap + 'static> Request<B> {
+    pub fn parse(
         desc_chain: &mut DescriptorChain<GuestMemoryLoadGuard<vm_memory::GuestMemoryMmap<B>>>,
         access_platform: Option<&dyn AccessPlatform>,
-    ) -> Result<Request, Error> {
+    ) -> Result<Request<B>, Error> {
         let hdr_desc = desc_chain
             .next()
             .ok_or(Error::DescriptorChainTooShort)
@@ -123,7 +125,7 @@ impl Request {
             .translate_gva(access_platform, hdr_desc.len() as usize)
             .map_err(|e| Error::GuestMemory(GuestMemoryError::IOError(e)))?;
 
-        let mut req = Request {
+        let mut req: Request<B> = Request {
             request_type: request_type(desc_chain.memory(), hdr_desc_addr)?,
             sector: sector(desc_chain.memory(), hdr_desc_addr)?,
             data_descriptors: SmallVec::with_capacity(DEFAULT_DESCRIPTOR_VEC_SIZE),
@@ -131,6 +133,7 @@ impl Request {
             writeback: true,
             aligned_operations: SmallVec::with_capacity(DEFAULT_DESCRIPTOR_VEC_SIZE),
             start: Instant::now(),
+            _phantom: PhantomData,
         };
 
         let status_desc;
@@ -200,7 +203,7 @@ impl Request {
         Ok(req)
     }
 
-    pub fn execute<T: Seek + Read + Write, B: Bitmap + 'static>(
+    pub fn execute<T: Seek + Read + Write>(
         &self,
         disk: &mut T,
         disk_nsectors: u64,
@@ -263,7 +266,7 @@ impl Request {
         Ok(len)
     }
 
-    pub fn execute_async<B: Bitmap + 'static>(
+    pub fn execute_async(
         &mut self,
         mem: &vm_memory::GuestMemoryMmap<B>,
         disk_nsectors: u64,
