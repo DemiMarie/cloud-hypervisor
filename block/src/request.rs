@@ -541,7 +541,12 @@ impl Request {
         Ok(ret)
     }
 
-    pub fn complete_async(&mut self) -> Result<(), Error> {
+    /// Complete a request initiated with [`Self::execute_async`].
+    ///
+    /// # Safety
+    ///
+    /// The underlying asynchronous I/O operation must have completed.
+    pub unsafe fn complete_async(&mut self) -> Result<(), Error> {
         for aligned_operation in self.aligned_operations.drain(..) {
             // We need to perform the copy after the data has been read inside
             // the aligned buffer in case we're reading data in.
