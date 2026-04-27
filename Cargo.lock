@@ -2766,6 +2766,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtio-vhost-user"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "byteorder",
+ "epoll",
+ "libc",
+ "log",
+ "thiserror",
+ "vhost",
+ "virtio-queue",
+ "vm-memory",
+ "vmm-sys-util",
+]
+
+[[package]]
 name = "vm-allocator"
 version = "0.1.0"
 dependencies = [
