@@ -59,6 +59,7 @@ members = [
   "serial_buffer",
   "test_infra",
   "tracer",
+  "vhost-guest",
   "vhost_user_block",
   "vhost_user_net",
   "virtio-devices",
