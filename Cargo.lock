@@ -2421,6 +2421,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhost-guest"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "log",
+ "thiserror",
+ "vhost",
+ "virtio-queue",
+ "vm-memory",
+ "vmm-sys-util",
+]
+
+[[package]]
 name = "vhost-user-backend"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
