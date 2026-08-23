@@ -10,6 +10,7 @@ mod backend_request;
 mod eventfd_checker;
 mod frontend_request;
 mod mapping;
+mod no_overlap_mapping;
 mod queue_pair;
 
 use std::os::fd::{AsRawFd as _, BorrowedFd};

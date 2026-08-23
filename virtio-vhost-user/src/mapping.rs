@@ -28,6 +28,8 @@ use vhost::vhost_user::message::VhostUserMemoryRegion;
 use vm_memory::bitmap::AtomicBitmap;
 use vm_memory::{GuestAddress, GuestMemoryRegion as _, GuestRegionMmap};
 
+use super::no_overlap_mapping;
+
 #[derive(PartialEq, Eq, Hash, Copy, Clone)]
 pub(super) struct MemRegionInfo {
     pub guest_phys_addr: u64,
@@ -39,6 +41,9 @@ pub type Region = Arc<GuestRegionMmap<AtomicBitmap>>;
 
 pub struct Mapping<T: Allocator> {
     region: Region,
+    // Mapping used to ensure that lookups are unique.
+    guest_phys_addr_map: no_overlap_mapping::RangeMap,
+    user_addr_map: no_overlap_mapping::RangeMap,
     address_ranges: HashMap<MemRegionInfo, usize>,
     allocator: T,
     page_size_mask: u64,
@@ -86,19 +91,22 @@ impl<T: Allocator> Mapping<T> {
     ) -> Result<(), Error> {
         self.check_mmap_params(memory_size, mmap_offset)?;
 
-        // There must not be an overflow computing the end of the address
-        // spaces.
-        let (Some(_last_guest_phys_addr), Some(_last_user_addr)) = (
-            memory_size.checked_add(guest_phys_addr),
-            memory_size.checked_add(user_addr),
-        ) else {
-            return Err(Error::InvalidParam);
-        };
-
         // The user address and guest physical address do not
         // technically need to be multiples of the page size,
         // but it would be very strange for them not to be.
         if guest_phys_addr & self.page_size_mask != 0 || user_addr & self.page_size_mask != 0 {
+            return Err(Error::InvalidParam);
+        }
+
+        if self
+            .guest_phys_addr_map
+            .contains_range(guest_phys_addr, memory_size)
+            .is_none()
+            || self
+                .user_addr_map
+                .contains_range(user_addr, memory_size)
+                .is_none()
+        {
             return Err(Error::InvalidParam);
         }
         Ok(())
@@ -238,12 +246,8 @@ impl<T: Allocator> Mapping<T> {
             mmap_offset.try_into().unwrap(),
         )
         .map_err(|e| {
-            unmap_region_internal(
-                &self.region,
-                guest_offset,
-                region.memory_size.try_into().unwrap(),
-            )
-            .expect("TODO: what to do if munmap() fails???");
+            unmap_region_internal(&self.region, guest_offset, memory_size.try_into().unwrap())
+                .expect("TODO: what to do if munmap() fails???");
             Error::ReqHandlerError(e)
         })?;
         assert!(
@@ -252,6 +256,12 @@ impl<T: Allocator> Mapping<T> {
                 .is_none(),
             "duplicate address range"
         );
+        self.guest_phys_addr_map
+            .insert(guest_phys_addr, memory_size)
+            .expect("checked earlier");
+        self.user_addr_map
+            .insert(user_addr, memory_size)
+            .expect("checked earlier");
         Ok(())
     }
 
@@ -268,6 +278,10 @@ impl<T: Allocator> Mapping<T> {
         unmap_region_internal(&self.region, offset, region.memory_size.try_into().unwrap())
             .map_err(Error::ReqHandlerError)?;
         self.address_ranges.remove(&region_lookup_key);
+        self.guest_phys_addr_map
+            .remove(region.guest_phys_addr, region.memory_size);
+        self.user_addr_map
+            .remove(region.user_addr, region.memory_size);
         Ok(())
     }
 
@@ -282,6 +296,8 @@ impl<T: Allocator> Mapping<T> {
             allocator,
             #[allow(clippy::useless_conversion)] // arch dependent
             page_size_mask: u64::from(page_size as c_ulong - 1),
+            guest_phys_addr_map: Default::default(),
+            user_addr_map: Default::default(),
         }
     }
 }
