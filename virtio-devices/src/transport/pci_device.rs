@@ -941,6 +941,15 @@ impl VirtioInterruptMsix {
             msix_table_size,
         }
     }
+
+    fn vector(&self, int_type: VirtioInterruptType) -> u16 {
+        match int_type {
+            VirtioInterruptType::Config => self.config_vector.load(Ordering::Acquire),
+            VirtioInterruptType::Queue(queue_index) => {
+                self.queues_vectors.lock().unwrap()[queue_index as usize]
+            }
+        }
+    }
 }
 
 impl VirtioInterrupt for VirtioInterruptMsix {
@@ -985,12 +994,7 @@ impl VirtioInterrupt for VirtioInterruptMsix {
     }
 
     fn notifier(&self, int_type: VirtioInterruptType) -> Option<EventFd> {
-        let vector = match int_type {
-            VirtioInterruptType::Config => self.config_vector.load(Ordering::Acquire),
-            VirtioInterruptType::Queue(queue_index) => {
-                self.queues_vectors.lock().unwrap()[queue_index as usize]
-            }
-        };
+        let vector = self.vector(int_type);
 
         if vector == VIRTQ_MSI_NO_VECTOR {
             return None;
@@ -1007,12 +1011,23 @@ impl VirtioInterrupt for VirtioInterruptMsix {
 
     fn set_notifier(
         &self,
-        interrupt: u32,
+        int_type: VirtioInterruptType,
         eventfd: Option<EventFd>,
         vm: &dyn hypervisor::Vm,
     ) -> io::Result<()> {
+        let vector = self.vector(int_type);
+
+        if vector == VIRTQ_MSI_NO_VECTOR {
+            return Ok(());
+        }
+
+        if vector as usize >= self.msix_table_size {
+            warn!("MSI-X vector {vector} out of range, notifier cannot be set");
+            return Ok(());
+        }
+
         self.interrupt_source_group
-            .set_notifier(interrupt, eventfd, vm)
+            .set_notifier(vector.into(), eventfd, vm)
     }
 }
 
@@ -1645,7 +1660,7 @@ mod tests {
         }
         fn set_notifier(
             &self,
-            _int_type: u32,
+            _int_type: VirtioInterruptType,
             _notifier: Option<EventFd>,
             _vm: &dyn hypervisor::Vm,
         ) -> io::Result<()> {

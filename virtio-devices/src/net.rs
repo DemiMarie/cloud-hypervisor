@@ -1334,7 +1334,7 @@ mod tests {
 
         fn set_notifier(
             &self,
-            _int_type: u32,
+            _int_type: VirtioInterruptType,
             _notifier: Option<EventFd>,
             _vm: &dyn hypervisor::Vm,
         ) -> io::Result<()> {
