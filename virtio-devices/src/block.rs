@@ -1359,8 +1359,13 @@ mod tests {
         fn trigger(&self, _: VirtioInterruptType) -> IoResult<()> {
             Ok(())
         }
-        fn set_notifier(&self, _: u32, _: Option<EventFd>, _: &dyn Vm) -> IoResult<()> {
-            Ok(())
+        fn set_notifier(
+            &self,
+            _: VirtioInterruptType,
+            _: Option<EventFd>,
+            _: &dyn Vm,
+        ) -> IoResult<()> {
+            unimplemented!()
         }
     }
     impl AsyncIo for Noop {
