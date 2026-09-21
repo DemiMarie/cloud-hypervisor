@@ -33,6 +33,7 @@ use crate::{
     VIRTIO_F_RING_INDIRECT_DESC,
 };
 
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub enum VirtioInterruptType {
     Config,
     Queue(u16),
@@ -40,12 +41,15 @@ pub enum VirtioInterruptType {
 
 pub trait VirtioInterrupt: Send + Sync {
     fn trigger(&self, int_type: VirtioInterruptType) -> io::Result<()>;
-    fn notifier(&self, _int_type: VirtioInterruptType) -> Option<EventFd> {
+    fn notifier(
+        &self,
+        #[allow(unused_variables)] int_type: VirtioInterruptType,
+    ) -> Option<EventFd> {
         None
     }
     fn set_notifier(
         &self,
-        int_type: u32,
+        int_type: VirtioInterruptType,
         notifier: Option<EventFd>,
         vm: &dyn hypervisor::Vm,
     ) -> io::Result<()>;
@@ -539,11 +543,11 @@ mod tests {
 
         fn set_notifier(
             &self,
-            _: u32,
+            _: VirtioInterruptType,
             _: Option<EventFd>,
             _: &dyn hypervisor::Vm,
         ) -> io::Result<()> {
-            Ok(())
+            unimplemented!()
         }
     }
 
@@ -554,11 +558,11 @@ mod tests {
         }
         fn set_notifier(
             &self,
-            _: u32,
+            _: VirtioInterruptType,
             _: Option<EventFd>,
             _: &dyn hypervisor::Vm,
         ) -> io::Result<()> {
-            Ok(())
+            unimplemented!()
         }
     }
 

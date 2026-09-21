@@ -183,7 +183,7 @@ pub mod tests {
 
         fn set_notifier(
             &self,
-            _interrupt: u32,
+            _interrupt: VirtioInterruptType,
             _eventfd: Option<EventFd>,
             _vm: &dyn hypervisor::Vm,
         ) -> io::Result<()> {
@@ -206,7 +206,7 @@ pub mod tests {
 
         fn set_notifier(
             &self,
-            _interrupt: u32,
+            _interrupt: VirtioInterruptType,
             _eventfd: Option<EventFd>,
             _vm: &dyn hypervisor::Vm,
         ) -> io::Result<()> {
