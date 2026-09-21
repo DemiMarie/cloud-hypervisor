@@ -1381,21 +1381,21 @@ mod tests {
     use std::sync::{Mutex, mpsc};
 
     use block::async_io::{AsyncIoCompletion, AsyncIoError, AsyncIoOperation, AsyncIoResult};
-    use hypervisor::Vm;
     use virtio_bindings::virtio_ring::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
     use vm_memory::GuestAddress;
     use vm_virtio::queue::testing::VirtQueue as GuestQ;
     use vmm_sys_util::eventfd::EFD_NONBLOCK;
 
     use super::*;
+    use crate::device;
 
     struct Noop(EventFd);
     impl VirtioInterrupt for Noop {
         fn trigger(&self, _: VirtioInterruptType) -> IoResult<()> {
             Ok(())
         }
-        fn set_notifier(&self, _: u32, _: Option<EventFd>, _: &dyn Vm) -> IoResult<()> {
-            Ok(())
+        fn set_notifier(&self, _: VirtioInterruptType, _: Option<EventFd>) -> IoResult<()> {
+            unimplemented!()
         }
     }
     impl AsyncIo for Noop {
@@ -1555,7 +1555,7 @@ mod tests {
             }
             Ok(())
         }
-        fn set_notifier(&self, _: u32, _: Option<EventFd>, _: &dyn Vm) -> IoResult<()> {
+        fn set_notifier(&self, _: device::VirtioInterruptType, _: Option<EventFd>) -> IoResult<()> {
             Ok(())
         }
     }
