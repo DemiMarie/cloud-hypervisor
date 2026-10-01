@@ -30,10 +30,10 @@ use self::http_endpoint::{
 use crate::api::VmCoredump;
 use crate::api::{
     AddDisk, ApiError, ApiRequest, VmAddDevice, VmAddFs, VmAddGenericVhostUser, VmAddNet,
-    VmAddPmem, VmAddUserDevice, VmAddVdpa, VmAddVsock, VmBoot, VmCancelMigration, VmCounters,
-    VmDelete, VmNmi, VmPause, VmPowerButton, VmReboot, VmReceiveMigration, VmRemoveDevice,
-    VmResize, VmResizeDisk, VmResizeZone, VmRestore, VmResume, VmSendMigration, VmShutdown,
-    VmSnapshot,
+    VmAddPmem, VmAddUserDevice, VmAddVdpa, VmAddVhostGuest, VmAddVsock, VmBoot, VmCancelMigration,
+    VmCounters, VmDelete, VmNmi, VmPause, VmPowerButton, VmReboot, VmReceiveMigration,
+    VmRemoveDevice, VmResize, VmResizeDisk, VmResizeZone, VmRestore, VmResume, VmSendMigration,
+    VmShutdown, VmSnapshot,
 };
 use crate::config::ValidationError;
 use crate::device_manager::DeviceManagerError;
@@ -261,6 +261,10 @@ pub static HTTP_ROUTES: LazyLock<HttpRoutes> = LazyLock::new(|| {
     r.routes.insert(
         endpoint!("/vm.add-vdpa"),
         Box::new(VmActionHandler::new(&VmAddVdpa)),
+    );
+    r.routes.insert(
+        endpoint!("/vm.add-vhost-guest"),
+        Box::new(VmActionHandler::new(&VmAddVhostGuest)),
     );
     r.routes.insert(
         endpoint!("/vm.add-vsock"),

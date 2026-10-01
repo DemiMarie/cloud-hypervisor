@@ -59,6 +59,7 @@ pub use self::pmem::Pmem;
 pub use self::rng::Rng;
 pub use self::rtc::Rtc;
 pub use self::vdpa::{Vdpa, VdpaDmaMapping};
+pub use self::vhost_guest::VhostGuest;
 pub use self::vsock::Vsock;
 pub use self::watchdog::Watchdog;
 
