@@ -452,6 +452,23 @@ pub fn default_diskconfig_sparse() -> bool {
     true
 }
 
+#[derive(PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+pub struct VhostGuestConfig {
+    #[serde(flatten)]
+    pub pci_common: PciDeviceCommonConfig,
+    pub uuid: [u8; 16],
+    pub device_type: u16,
+    pub max_queues: u32,
+    // Special deserialize handling:
+    // Therefore, we don't serialize FDs, and whatever value is here after
+    // deserialization is invalid.
+    //
+    // Valid FDs are transmitted via a different channel (SCM_RIGHTS message)
+    // and will be populated into this struct on the destination VMM eventually.
+    #[serde(skip)]
+    pub fds: Option<Vec<i32>>,
+}
+
 #[serde_with::skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct NetConfig {
@@ -1167,7 +1184,7 @@ impl ApplyLandlock for LandlockConfig {
 }
 
 #[serde_with::skip_serializing_none]
-#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(PartialEq, Eq, Debug, Deserialize, Serialize)]
 pub struct VmConfig {
     #[serde(default)]
     pub cpus: CpusConfig,
@@ -1179,6 +1196,7 @@ pub struct VmConfig {
     pub net: Option<Vec<NetConfig>>,
     #[serde(default)]
     pub rng: RngConfig,
+    pub vhost_guest: Option<Vec<VhostGuestConfig>>,
     pub balloon: Option<BalloonConfig>,
     pub generic_vhost_user: Option<Vec<GenericVhostUserConfig>>,
     pub fs: Option<Vec<FsConfig>>,

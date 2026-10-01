@@ -114,7 +114,8 @@ use crate::sev::MeasuredBootInfo;
 use crate::vm_config::FwCfgConfig;
 use crate::vm_config::{
     DeviceConfig, DiskConfig, FsConfig, GenericVhostUserConfig, HotplugMethod, NetConfig,
-    NumaConfig, PayloadConfig, PmemConfig, UserDeviceConfig, VdpaConfig, VmConfig, VsockConfig,
+    NumaConfig, PayloadConfig, PmemConfig, UserDeviceConfig, VdpaConfig, VhostGuestConfig,
+    VmConfig, VsockConfig,
 };
 use crate::{
     CPU_MANAGER_SNAPSHOT_ID, DEVICE_MANAGER_SNAPSHOT_ID, GuestMemoryMmap,
@@ -2392,6 +2393,33 @@ impl Vm {
         {
             let mut config = self.config.lock().unwrap();
             add_to_config(&mut config.vdpa, vdpa_cfg);
+        }
+
+        self.device_manager
+            .lock()
+            .unwrap()
+            .notify_hotplug(AcpiNotificationFlags::PCI_DEVICES_CHANGED)
+            .map_err(Error::DeviceManager)?;
+
+        Ok(pci_device_info)
+    }
+
+    pub fn add_vhost_guest(
+        &mut self,
+        mut vhost_guest_config: VhostGuestConfig,
+    ) -> Result<PciDeviceInfo> {
+        let pci_device_info = self
+            .device_manager
+            .lock()
+            .unwrap()
+            .add_vhost_guest(&mut vhost_guest_config)
+            .map_err(Error::DeviceManager)?;
+
+        // Update VmConfig by adding the new device. This is important to
+        // ensure the device would be created in case of a reboot.
+        {
+            let mut config = self.config.lock().unwrap();
+            add_to_config(&mut config.vhost_guest, vhost_guest_config);
         }
 
         self.device_manager

@@ -8,7 +8,7 @@ mod logger;
 mod test_util;
 
 use std::fs::{self, File};
-use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::os::fd::{AsRawFd as _, FromRawFd as _, RawFd};
 use std::path::Path;
 #[cfg(feature = "guest_debug")]
 use std::path::PathBuf;
@@ -32,16 +32,15 @@ use vmm::api::{self, ApiAction};
 use vmm::config::{self, RestoreConfig, VmParams};
 use vmm::landlock::{Landlock, LandlockError};
 use vmm::vm::Vm;
-use vmm::vm_config;
 #[cfg(feature = "fw_cfg")]
 use vmm::vm_config::FwCfgConfig;
 #[cfg(feature = "ivshmem")]
 use vmm::vm_config::IvshmemConfig;
 use vmm::vm_config::{
-    BalloonConfig, ConsoleConfig, DeviceConfig, DiskConfig, FsConfig, GenericVhostUserConfig,
+    self, BalloonConfig, ConsoleConfig, DeviceConfig, DiskConfig, FsConfig, GenericVhostUserConfig,
     LandlockConfig, NetConfig, NumaConfig, PciSegmentConfig, PlatformConfig, PmemConfig,
     RateLimiterGroupConfig, RngConfig, RtcConfig, SerialConfig, TpmConfig, UserDeviceConfig,
-    VdpaConfig, VmConfig, VsockConfig,
+    VdpaConfig, VhostGuestConfig, VmConfig, VsockConfig,
 };
 use vmm_sys_util::eventfd::EventFd;
 use vmm_sys_util::signal::block_signal;
@@ -538,6 +537,12 @@ fn get_cli_options_sorted(
             .action(ArgAction::SetTrue)
             .help("Print version")
             .num_args(0),
+        Arg::new("vhost-guest")
+            .long("vhost-guest")
+            .help(VhostGuestConfig::SYNTAX)
+            .num_args(1..)
+            .action(ArgAction::Append)
+            .group("vm-config"),
         Arg::new("vsock")
             .long("vsock")
             .help(VsockConfig::SYNTAX)
@@ -1188,6 +1193,7 @@ mod tests {
             landlock_rules: None,
             #[cfg(feature = "ivshmem")]
             ivshmem: None,
+            vhost_guest: None,
         };
 
         assert_eq!(expected_vm_config, result_vm_config);

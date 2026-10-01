@@ -64,7 +64,7 @@ use crate::migration::transport::{
 use crate::vm::{Error as VmError, VmState};
 use crate::vm_config::{
     DeviceConfig, DiskConfig, FsConfig, GenericVhostUserConfig, NetConfig, PmemConfig,
-    UserDeviceConfig, VdpaConfig, VmConfig, VsockConfig,
+    UserDeviceConfig, VdpaConfig, VhostGuestConfig, VmConfig, VsockConfig,
 };
 
 /// API errors are sent back from the VMM API server through the ApiResponse.
@@ -185,6 +185,10 @@ pub enum ApiError {
     /// The vDPA device could not be added to the VM.
     #[error("The vDPA device could not be added to the VM")]
     VmAddVdpa(#[source] VmError),
+
+    /// The vhost-guest device could not be added to the VM.
+    #[error("The vhost-guest device could not be added to the VM")]
+    VmAddVhostGuest(#[source] VmError),
 
     /// The vsock device could not be added to the VM.
     #[error("The vsock device could not be added to the VM")]
@@ -933,6 +937,11 @@ pub trait RequestHandler {
 
     fn vm_add_vdpa(&mut self, vdpa_cfg: VdpaConfig) -> Result<Option<Vec<u8>>, VmError>;
 
+    fn vm_add_vhost_guest(
+        &mut self,
+        vdpa_cfg: VhostGuestConfig,
+    ) -> Result<Option<Vec<u8>>, VmError>;
+
     fn vm_add_vsock(&mut self, vsock_cfg: VsockConfig) -> Result<Option<Vec<u8>>, VmError>;
 
     fn vm_counters(&mut self) -> Result<Option<Vec<u8>>, VmError>;
@@ -1256,6 +1265,43 @@ impl ApiAction for VmAddVdpa {
             let response = vmm
                 .vm_add_vdpa(config)
                 .map_err(ApiError::VmAddVdpa)
+                .map(ApiResponsePayload::VmAction);
+
+            response_sender
+                .send(response)
+                .map_err(VmmError::ApiResponseSend)?;
+
+            Ok(false)
+        })
+    }
+
+    fn send(
+        &self,
+        api_evt: EventFd,
+        api_sender: Sender<ApiRequest>,
+        data: Self::RequestBody,
+    ) -> ApiResult<Self::ResponseBody> {
+        get_response_body(self, api_evt, api_sender, data)
+    }
+}
+
+pub struct VmAddVhostGuest;
+
+impl ApiAction for VmAddVhostGuest {
+    type RequestBody = VhostGuestConfig;
+    type ResponseBody = Option<Body>;
+
+    fn request(
+        &self,
+        config: Self::RequestBody,
+        response_sender: Sender<ApiResponse>,
+    ) -> ApiRequest {
+        Box::new(move |vmm| {
+            info!("API request event: VmAddVhostGuest {config:?}");
+
+            let response = vmm
+                .vm_add_vhost_guest(config)
+                .map_err(ApiError::VmAddVhostGuest)
                 .map(ApiResponsePayload::VmAction);
 
             response_sender

@@ -3260,6 +3260,38 @@ impl RequestHandler for Vmm {
         }
     }
 
+    fn vm_add_vhost_guest(
+        &mut self,
+        vhost_guest_cfg: vm_config::VhostGuestConfig,
+    ) -> result::Result<Option<Vec<u8>>, VmError> {
+        self.vm_config.as_ref().ok_or(VmError::VmNotCreated)?;
+
+        {
+            // Validate the configuration change in a cloned configuration
+            let mut config = self.vm_config.as_ref().unwrap().lock().unwrap().clone();
+            add_to_config(&mut config.vhost_guest, vhost_guest_cfg.clone());
+            config.validate().map_err(VmError::ConfigValidation)?;
+        }
+
+        match self.vm {
+            VmOwnership::Owned(ref mut vm) => {
+                let info = vm.add_vhost_guest(vhost_guest_cfg).inspect_err(|e| {
+                    error!("Error when adding new network device to the VM: {e:?}");
+                })?;
+                serde_json::to_vec(&info)
+                    .map(Some)
+                    .map_err(VmError::SerializeJson)
+            }
+            VmOwnership::Migration { .. } => Err(VmError::VmMigrating),
+            VmOwnership::None => {
+                // Update VmConfig by adding the new device.
+                let mut config = self.vm_config.as_ref().unwrap().lock().unwrap();
+                add_to_config(&mut config.vhost_guest, vhost_guest_cfg);
+                Ok(None)
+            }
+        }
+    }
+
     fn vm_add_vsock(&mut self, vsock_cfg: VsockConfig) -> result::Result<Option<Vec<u8>>, VmError> {
         self.vm_config.as_ref().ok_or(VmError::VmNotCreated)?;
 
@@ -3711,6 +3743,7 @@ mod tests {
             landlock_rules: None,
             #[cfg(feature = "ivshmem")]
             ivshmem: None,
+            vhost_guest: None,
         })
     }
 
