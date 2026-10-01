@@ -2463,20 +2463,44 @@ impl MemoryManager {
         start_addr: GuestAddress,
         size: usize,
     ) -> Result<Arc<GuestRegionMmap>, Error> {
+        self.add_ram_region_raw(start_addr, size, true)
+    }
+
+    pub fn add_ram_region_raw(
+        &mut self,
+        start_addr: GuestAddress,
+        size: usize,
+        accessible: bool,
+    ) -> Result<Arc<GuestRegionMmap>, Error> {
         // Allocate memory for the region
-        let region = MemoryManager::create_ram_region(
-            &None,
-            0,
-            start_addr,
-            size,
-            self.reserve.unwrap_or(self.hugepages),
-            self.shared,
-            self.hugepages,
-            self.hugepage_size,
-            None,
-            None,
-            self.thp,
-        )?;
+        let region = if accessible {
+            MemoryManager::create_ram_region(
+                &None,
+                0,
+                start_addr,
+                size,
+                self.reserve.unwrap_or(self.hugepages),
+                self.shared,
+                self.hugepages,
+                self.hugepage_size,
+                None,
+                None,
+                self.thp,
+            )?
+        } else {
+            let r = MmapRegion::build(
+                None,
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE,
+            )
+            .map_err(Error::GuestMemoryRegion)?;
+            Arc::new(
+                GuestRegionMmap::new(r, start_addr).ok_or(Error::GuestMemory(
+                    MmapError::InvalidGuestAddress(start_addr),
+                ))?,
+            )
+        };
 
         if self.prefault {
             let page_size =
@@ -2504,17 +2528,18 @@ impl MemoryManager {
                 hypervisor::MemoryVisibility::Private,
             )
         }?;
-        self.guest_ram_mappings.push(GuestRamMapping {
-            gpa: region.start_addr().raw_value(),
-            size: region.len(),
-            slot,
-            zone_id: DEFAULT_MEMORY_ZONE.to_string(),
-            virtio_mem: false,
-            file_offset: 0,
-        });
+        if accessible {
+            self.guest_ram_mappings.push(GuestRamMapping {
+                gpa: region.start_addr().raw_value(),
+                size: region.len(),
+                slot,
+                zone_id: DEFAULT_MEMORY_ZONE.to_string(),
+                virtio_mem: false,
+                file_offset: 0,
+            });
 
-        self.add_region(Arc::clone(&region))?;
-
+            self.add_region(Arc::clone(&region))?;
+        }
         Ok(region)
     }
 
