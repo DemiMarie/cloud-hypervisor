@@ -50,10 +50,10 @@ use crate::api::http::http_endpoint::fds_helper::{attach_fds_to_cfg, attach_fds_
 use crate::api::http::{EndpointHandler, HttpError, error_response};
 use crate::api::{
     AddDisk, ApiAction, ApiError, ApiRequest, DeviceConfig, NetConfig, VmAddDevice, VmAddFs,
-    VmAddGenericVhostUser, VmAddNet, VmAddPmem, VmAddUserDevice, VmAddVdpa, VmAddVsock, VmBoot,
-    VmCancelMigration, VmConfig, VmCounters, VmDelete, VmNmi, VmPause, VmPowerButton, VmReboot,
-    VmReceiveMigration, VmReceiveMigrationData, VmRemoveDevice, VmResize, VmResizeDisk,
-    VmResizeZone, VmRestore, VmResume, VmSendMigration, VmShutdown, VmSnapshot,
+    VmAddGenericVhostUser, VmAddNet, VmAddPmem, VmAddUserDevice, VmAddVdpa, VmAddVhostGuest,
+    VmAddVsock, VmBoot, VmCancelMigration, VmConfig, VmCounters, VmDelete, VmNmi, VmPause,
+    VmPowerButton, VmReboot, VmReceiveMigration, VmReceiveMigrationData, VmRemoveDevice, VmResize,
+    VmResizeDisk, VmResizeZone, VmRestore, VmResume, VmSendMigration, VmShutdown, VmSnapshot,
 };
 use crate::config::RestoreConfig;
 use crate::cpu::Error as CpuError;
@@ -123,7 +123,21 @@ mod fds_helper {
 
         use super::{ConfigWithFDs, ConfigWithVariableFDs};
         use crate::config::{RestoredNetConfig, RestoredVfioConfig};
-        use crate::vm_config::{DeviceConfig, NetConfig};
+        use crate::vm_config::{DeviceConfig, NetConfig, VhostGuestConfig};
+
+        impl ConfigWithFDs for VhostGuestConfig {
+            fn id(&self) -> Option<&str> {
+                self.pci_common.id.as_deref()
+            }
+
+            fn fds_from_http_body(&self) -> Option<&[RawFd]> {
+                self.fds.as_deref()
+            }
+
+            fn set_fds(&mut self, fds: Option<Vec<RawFd>>) {
+                self.fds = fds;
+            }
+        }
 
         impl ConfigWithFDs for NetConfig {
             fn id(&self) -> Option<&str> {
@@ -479,6 +493,7 @@ vm_action_put_handler_body!(VmAddFs);
 vm_action_put_handler_body!(VmAddGenericVhostUser);
 vm_action_put_handler_body!(VmAddPmem);
 vm_action_put_handler_body!(VmAddVdpa);
+vm_action_put_handler_body!(VmAddVhostGuest);
 vm_action_put_handler_body!(VmAddVsock);
 vm_action_put_handler_body!(VmAddUserDevice);
 vm_action_put_handler_body!(VmRemoveDevice);
