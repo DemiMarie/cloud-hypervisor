@@ -857,6 +857,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fd-utils"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "thiserror",
+ "vmm-sys-util",
+]
+
+[[package]]
 name = "fdt"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
