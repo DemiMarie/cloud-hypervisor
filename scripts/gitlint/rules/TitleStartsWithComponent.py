@@ -39,6 +39,7 @@ class TitleStartsWithComponent(LineRule):
             'devices',
             'docs',
             'event_monitor',
+            'fd-utils',
             'fuzz',
             'github',
             'gitignore',
