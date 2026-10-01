@@ -27,6 +27,7 @@ signal-hook = { workspace = true }
 signal-hook-registry = { workspace = true }
 thiserror = { workspace = true }
 tracer = { path = "../tracer" }
+vhost-guest = { path = "../vhost-guest" }
 vm-migration = { path = "../vm-migration" }
 vmm = { path = "../vmm" }
 vmm-sys-util = { workspace = true }

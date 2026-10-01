@@ -589,7 +589,14 @@ const _: () = assert!(
 // SAFETY: VirtioVhostGuestState has no padding and all values are valid.
 unsafe impl ByteValued for VirtioVhostGuestState {}
 
-// Virtio device backend
+pub trait GetSharedMemory: Send {
+    /// Get a shared memory list.
+    fn get_shm_regions(&self) -> VirtioSharedMemoryList;
+    /// Set a shared memory list.
+    fn set_shm_regions(&mut self, shm_regions: VirtioSharedMemoryList);
+}
+
+/// Virtio vhost-guest device
 pub struct VhostGuest {
     common: VirtioCommon,
     id: String,
@@ -598,7 +605,7 @@ pub struct VhostGuest {
     seccomp_action: SeccompAction,
     exit_evt: EventFd,
     max_queues: u8,
-    shm: VirtioSharedMemoryList,
+    shm: Box<dyn GetSharedMemory>,
     #[expect(dead_code)]
     msix_fds: [Option<OwnedFd>; MSIX_ARRAY_SIZE],
     #[expect(dead_code)]
@@ -609,7 +616,7 @@ pub struct VhostGuest {
 }
 
 impl VhostGuest {
-    // Create a new virtio-vhost-guest.
+    /// Create a new virtio-vhost-guest.
     #[expect(clippy::too_many_arguments)]
     pub fn new(
         id: String,
@@ -620,7 +627,7 @@ impl VhostGuest {
         device_type: u16,
         listener: OwnedFd,
         vm: Arc<dyn hypervisor::Vm>,
-        region: VirtioSharedMemoryList,
+        shared_memory: Box<dyn GetSharedMemory>,
         access_platform_enabled: bool,
     ) -> io::Result<Self> {
         if max_queues > 255 {
@@ -684,7 +691,7 @@ impl VhostGuest {
             max_queues: max_queues as _,
             statuses: [false; MSIX_ARRAY_SIZE],
             msix_fds: [const { None }; MSIX_ARRAY_SIZE],
-            shm: region,
+            shm: shared_memory,
             vm,
             ioeventfds,
             accept_evt,
@@ -813,7 +820,7 @@ impl VirtioDevice for VhostGuest {
             None,
             mem.clone(),
         );
-        let mapping = Mapping::new(Arc::clone(&self.shm.mapping));
+        let mapping = Mapping::new(Arc::clone(&self.shm.get_shm_regions().mapping));
         let vm = InternalVM {
             vm: Arc::clone(&self.vm),
             interrupt_cb: Arc::clone(&interrupt_cb),
@@ -906,22 +913,23 @@ impl VirtioDevice for VhostGuest {
     }
 
     fn get_shm_regions(&self) -> Option<VirtioSharedMemoryList> {
-        Some(self.shm.clone())
+        Some(self.shm.get_shm_regions())
     }
 
     fn set_shm_regions(
         &mut self,
         shm_regions: VirtioSharedMemoryList,
     ) -> result::Result<(), crate::Error> {
-        self.shm = shm_regions;
+        self.shm.set_shm_regions(shm_regions);
         Ok(())
     }
 
     fn userspace_mappings(&self) -> Vec<UserspaceMapping> {
+        let mapping = self.shm.get_shm_regions();
         vec![UserspaceMapping {
-            mem_slot: self.shm.mem_slot,
-            addr: self.shm.addr,
-            mapping: Arc::clone(&self.shm.mapping),
+            mem_slot: mapping.mem_slot,
+            addr: mapping.addr,
+            mapping: mapping.mapping,
             mergeable: false,
         }]
     }

@@ -21,6 +21,7 @@ use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{self, IsTerminal, Seek, SeekFrom, stdout};
 use std::num::Wrapping;
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 #[cfg(not(target_arch = "riscv64"))]
@@ -160,8 +161,8 @@ use crate::vm_config::IvshmemConfig;
 use crate::vm_config::{
     ConsoleOutputMode, DEFAULT_IOMMU_ADDRESS_WIDTH_BITS, DEFAULT_PCI_SEGMENT_APERTURE_WEIGHT,
     DeviceConfig, DiskConfig, FsConfig, GenericVhostUserConfig, IommuType, NetConfig,
-    PciDeviceCommonConfig, PmemConfig, UserDeviceConfig, VdpaConfig, VhostMode, VmConfig,
-    VsockConfig,
+    PciDeviceCommonConfig, PmemConfig, UserDeviceConfig, VdpaConfig, VhostGuestConfig, VhostMode,
+    VmConfig, VsockConfig,
 };
 use crate::{DEVICE_MANAGER_SNAPSHOT_ID, GuestRegionMmap, PciDeviceInfo, device_node};
 
@@ -203,6 +204,7 @@ const VSOCK_DEVICE_NAME_PREFIX: &str = "_vsock";
 const WATCHDOG_DEVICE_NAME: &str = "__watchdog";
 const VFIO_DEVICE_NAME_PREFIX: &str = "_vfio";
 const VFIO_USER_DEVICE_NAME_PREFIX: &str = "_vfio_user";
+const VHOST_GUEST_DEVICE_NAME_PREFIX: &str = "_vhost_guest";
 const VIRTIO_PCI_DEVICE_NAME_PREFIX: &str = "_virtio-pci";
 
 /// Errors associated with device manager
@@ -252,6 +254,18 @@ pub enum DeviceManagerError {
     #[error("Cannot create virtio-fs device")]
     CreateVirtioFs(#[source] vhost_user::Error),
 
+    /// Cannot create virtio-vhost-guest device
+    #[error("Cannot create virtio-vhost-guest device")]
+    CreateVirtioVhostGuest(#[source] io::Error),
+
+    /// Virtio-vhost-guest devices do not support migration
+    #[error("Virtio-vhost-guest devices do not support migration")]
+    CannotMigrateVirtioVhostGuest,
+
+    /// Cannot create virtio-vhost-guest device shared memory region
+    #[error("Cannot create virtio-vhost-guest shared memory region")]
+    CreateVirtioVhostGuestMemoryRegion(#[source] MemoryManagerError),
+
     /// Virtio-fs device was created without a socket.
     #[error("Virtio-fs device was created without a socket")]
     NoVirtioFsSock,
@@ -259,6 +273,10 @@ pub enum DeviceManagerError {
     /// Generic vhost-user device was created without a socket.
     #[error("Generic vhost-user device was created without a socket")]
     NoGenericVhostUserSock,
+
+    /// Generic vhost-user device was created without a socket.
+    #[error("Vhost-guest device was created without a socket")]
+    NoVhostGuestSock,
 
     /// Cannot create vhost-user-blk device
     #[error("Cannot create vhost-user-blk device")]
@@ -949,6 +967,125 @@ impl AccessPlatform for SevSnpPageAccessProxy {
         Ok(base)
     }
 }
+
+mod safe_userspace_mapping {
+    use std::mem::ManuallyDrop;
+
+    use libc::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
+    use log::error;
+    use virtio_devices::vhost_guest::GetSharedMemory;
+    use virtio_devices::{VirtioSharedMemory, VirtioSharedMemoryList};
+    use vm_memory::bitmap::AtomicBitmap;
+    use vm_memory::{GuestAddress, VolatileMemory};
+
+    use super::{Arc, MemoryManager, MmapRegion, Mutex};
+    use crate::memory_manager;
+
+    /// Safe userspace memory mapping
+    pub struct SafeUserspaceMapping {
+        /// Memory Manager
+        memory_manager: Arc<Mutex<MemoryManager>>,
+        /// Slot number
+        slot: u32,
+        /// Region
+        region: ManuallyDrop<Arc<MmapRegion<AtomicBitmap>>>,
+        /// Guest address
+        guest_address: GuestAddress,
+    }
+
+    impl GetSharedMemory for SafeUserspaceMapping {
+        fn get_shm_regions(&self) -> VirtioSharedMemoryList {
+            VirtioSharedMemoryList {
+                mem_slot: self.slot,
+                addr: self.guest_address,
+                mapping: self.get_userspace_mapping(),
+                region_list: vec![VirtioSharedMemory {
+                    offset: 0,
+                    len: self.region.len().try_into().unwrap(),
+                }],
+            }
+        }
+
+        fn set_shm_regions(&mut self, shm_regions: VirtioSharedMemoryList) {
+            assert_eq!(Arc::as_ptr(&shm_regions.mapping), Arc::as_ptr(&self.region));
+            assert_eq!(shm_regions.mem_slot, self.slot);
+            assert_eq!(shm_regions.region_list.len(), 1);
+            assert_eq!(shm_regions.region_list[0].offset, 0);
+            assert_eq!(
+                shm_regions.region_list[0].len,
+                u64::try_from(self.region.len()).unwrap()
+            );
+            self.guest_address = shm_regions.addr;
+        }
+    }
+
+    impl SafeUserspaceMapping {
+        pub fn new(
+            memory_manager: Arc<Mutex<MemoryManager>>,
+            size: usize,
+            guest_address: vm_memory::GuestAddress,
+        ) -> Result<Self, memory_manager::Error> {
+            let region = MmapRegion::build(
+                None,
+                size,
+                PROT_NONE,
+                MAP_ANONYMOUS | MAP_NORESERVE | MAP_PRIVATE,
+            )
+            .map_err(memory_manager::Error::GuestMemoryRegion)?;
+            // SAFETY: MmapRegion invariants
+            let slot = unsafe {
+                memory_manager.lock().unwrap().create_userspace_mapping(
+                    guest_address.0,
+                    size,
+                    region.as_ptr(),
+                    false,
+                    false,
+                    false,
+                    hypervisor::MemoryVisibility::Shared,
+                )?
+            };
+            Ok(Self {
+                memory_manager,
+                slot,
+                region: ManuallyDrop::new(Arc::new(region)),
+                guest_address,
+            })
+        }
+        pub fn get_userspace_mapping(&self) -> Arc<MmapRegion<AtomicBitmap>> {
+            Arc::clone(&*self.region)
+        }
+        pub fn guest_address(&self) -> GuestAddress {
+            self.guest_address
+        }
+        pub fn slot(&self) -> u32 {
+            self.slot
+        }
+    }
+
+    impl Drop for SafeUserspaceMapping {
+        fn drop(&mut self) {
+            // SAFETY: region created in new() and valid
+            if let Err(e) = unsafe {
+                self.memory_manager
+                    .lock()
+                    .unwrap()
+                    .remove_userspace_mapping(
+                        self.guest_address.0,
+                        self.region.size(),
+                        self.region.as_ptr(),
+                        false,
+                        self.slot,
+                    )
+            } {
+                error!("Cannot release memory region: {e}");
+                return;
+            }
+            // SAFETY: validly initialized in new() and only called once
+            unsafe { ManuallyDrop::drop(&mut self.region) };
+        }
+    }
+}
+pub use safe_userspace_mapping::SafeUserspaceMapping;
 
 pub struct DeviceManager {
     // Manage address space related to devices
@@ -2803,6 +2940,9 @@ impl DeviceManager {
         // Add generic vhost-user if required
         self.make_generic_vhost_user_devices(snapshot)?;
 
+        // Add generic vhost-user if required
+        self.make_virtio_vhost_guest_devices(snapshot)?;
+
         // Add virtio-fs if required
         self.make_virtio_fs_devices(snapshot)?;
 
@@ -3211,6 +3351,97 @@ impl DeviceManager {
             }
         }
         self.config.lock().unwrap().net = net_devices;
+
+        Ok(())
+    }
+
+    fn make_virtio_vhost_guest_device(
+        &mut self,
+        vhost_guest_cfg: &mut VhostGuestConfig,
+        snapshot: Option<&Snapshot>,
+    ) -> DeviceManagerResult<MetaVirtioDevice> {
+        if snapshot.is_some() {
+            return Err(DeviceManagerError::CannotMigrateVirtioVhostGuest);
+        }
+        let Some(seg) = self.pci_segments[usize::from(vhost_guest_cfg.pci_common.pci_segment)]
+            .mem64_allocator
+            .lock()
+            .unwrap()
+            .allocate(None, 1u64 << 40, Some(1u64 << 40))
+        else {
+            return Err(DeviceManagerError::CreateVirtioVhostGuest(
+                io::Error::other("Cannot allocate shared memory BAR"),
+            ));
+        };
+        let region = SafeUserspaceMapping::new(Arc::clone(&self.memory_manager), 1usize << 40, seg)
+            .map_err(DeviceManagerError::CreateVirtioVhostGuestMemoryRegion)?;
+        let id = match vhost_guest_cfg.pci_common.id.as_ref() {
+            Some(id) => id.clone(),
+            None => vhost_guest_cfg
+                .pci_common
+                .id
+                .insert(self.next_device_name(VHOST_GUEST_DEVICE_NAME_PREFIX)?)
+                .clone(),
+        };
+        info!("Creating virtio-vhost-guest device: {vhost_guest_cfg:?}");
+
+        let (virtio_device, migratable_device) = {
+            let fd = vhost_guest_cfg
+                .fds
+                .take()
+                .expect("FD must be set by this point");
+            assert_eq!(fd.len(), 1, "FD must have length 1 at this point");
+            let virtio_vhost_guest = Arc::new(Mutex::new(
+                virtio_devices::VhostGuest::new(
+                    id.clone(),
+                    self.seccomp_action.clone(),
+                    self.exit_evt
+                        .try_clone()
+                        .map_err(DeviceManagerError::EventFd)?,
+                    vhost_guest_cfg.max_queues,
+                    vhost_guest_cfg.uuid,
+                    vhost_guest_cfg.device_type,
+                    // SAFETY: not actually safe, but API is bad
+                    unsafe { OwnedFd::from_raw_fd(fd[0]) },
+                    Arc::clone(&self.address_manager.vm),
+                    Box::new(region),
+                    self.force_access_platform | vhost_guest_cfg.pci_common.iommu.attached(),
+                )
+                .map_err(DeviceManagerError::CreateVirtioVhostGuest)?,
+            ));
+            (
+                Arc::clone(&virtio_vhost_guest) as Arc<Mutex<dyn virtio_devices::VirtioDevice>>,
+                virtio_vhost_guest as Arc<Mutex<dyn Migratable>>,
+            )
+        };
+
+        // Fill the device tree with a new node. In case of restore, we
+        // know there is nothing to do, so we can simply override the
+        // existing entry.
+        self.device_tree
+            .lock()
+            .unwrap()
+            .insert(id.clone(), device_node!(id, migratable_device));
+
+        Ok(MetaVirtioDevice {
+            virtio_device,
+            pci_common: vhost_guest_cfg.pci_common.clone(),
+            dma_handler: None,
+        })
+    }
+
+    fn make_virtio_vhost_guest_devices(
+        &mut self,
+        snapshot: Option<&Snapshot>,
+    ) -> DeviceManagerResult<()> {
+        let mut vhost_guest_devices = self.config.lock().unwrap().vhost_guest.take();
+        if let Some(vhost_guest_list_cfg) = &mut vhost_guest_devices {
+            for vhost_guest_cfg in vhost_guest_list_cfg.iter_mut() {
+                let device = self.make_virtio_vhost_guest_device(vhost_guest_cfg, snapshot)?;
+                self.virtio_devices.push(device);
+            }
+        }
+        self.config.lock().unwrap().vhost_guest = vhost_guest_devices;
 
         Ok(())
     }
@@ -5925,6 +6156,16 @@ impl DeviceManager {
         self.validate_identifier(&fs_cfg.pci_common.id)?;
 
         let device = self.make_virtio_fs_device(fs_cfg, None)?;
+        self.hotplug_virtio_pci_device(device)
+    }
+
+    pub fn add_vhost_guest(
+        &mut self,
+        vhost_guest_cfg: &mut VhostGuestConfig,
+    ) -> DeviceManagerResult<PciDeviceInfo> {
+        self.validate_identifier(&vhost_guest_cfg.pci_common.id)?;
+
+        let device = self.make_virtio_vhost_guest_device(vhost_guest_cfg, None)?;
         self.hotplug_virtio_pci_device(device)
     }
 

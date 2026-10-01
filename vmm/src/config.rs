@@ -25,6 +25,7 @@ use option_parser::{
 use pci::NUM_DEVICE_IDS;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use uuid::Uuid;
 use virtio_bindings::virtio_blk::VIRTIO_BLK_ID_BYTES;
 use virtio_bindings::virtio_ids::*;
 use virtio_devices::block::MINIMUM_BLOCK_QUEUE_SIZE;
@@ -205,6 +206,14 @@ pub enum Error {
     #[cfg(target_arch = "x86_64")]
     #[error("Error parsing CPUID overrides")]
     InvalidCpuidOverride(#[source] CpuidOverrideParseError),
+    #[error("Error parsing --vhost-guest items")]
+    ParseVhostGuest(#[source] OptionParserError),
+    #[error("Error parsing --vhost-guest: Socket missing")]
+    ParseVhostGuestSocketMissing,
+    #[error("Error parsing --vhost-guest: UUID missing")]
+    ParseVhostGuestUuidMissing,
+    #[error("Error parsing --vhost-guest: Device type missing")]
+    ParseVhostGuestDeviceTypeMissing,
 }
 
 #[derive(Debug, PartialEq, Eq, Error)]
@@ -559,6 +568,7 @@ pub struct VmParams<'a> {
     pub devices: Option<Vec<&'a str>>,
     pub user_devices: Option<Vec<&'a str>>,
     pub vdpa: Option<Vec<&'a str>>,
+    pub vhost_guest: Option<Vec<&'a str>>,
     pub vsock: Option<&'a str>,
     #[cfg(feature = "pvmemcontrol")]
     pub pvmemcontrol: bool,
@@ -629,6 +639,9 @@ impl<'a> VmParams<'a> {
             .get_many::<String>("vdpa")
             .map(|x| x.map(|y| y as &str).collect());
         let vsock: Option<&str> = args.get_one::<String>("vsock").map(|x| x as &str);
+        let vhost_guest: Option<Vec<&str>> = args
+            .get_many::<String>("vhost-guest")
+            .map(|x| x.map(|y| y as &str).collect());
         #[cfg(feature = "pvmemcontrol")]
         let pvmemcontrol = args.get_flag("pvmemcontrol");
         let pvpanic = args.get_flag("pvpanic");
@@ -681,6 +694,7 @@ impl<'a> VmParams<'a> {
             user_devices,
             vdpa,
             vsock,
+            vhost_guest,
             #[cfg(feature = "pvmemcontrol")]
             pvmemcontrol,
             pvpanic,
@@ -2809,6 +2823,55 @@ impl VdpaConfig {
     }
 }
 
+impl VhostGuestConfig {
+    pub const SYNTAX: &'static str = "Virtio vhost-guest parameters \
+\"socket=<socket fd>,iommu=on|off,uuid=<uuid>,device_type=<device_type>,\
+id=<device_id>,pci_segment=<segment_id>,pci_device_id=<pci_slot>\"";
+
+    pub fn parse(vsock: &str) -> Result<Self> {
+        let mut parser = OptionParser::new();
+        parser
+            .add("socket_fd")
+            .add("uuid")
+            .add("device_type")
+            .add("max_queues")
+            .add_all(PciDeviceCommonConfig::OPTIONS_IOMMU);
+        parser.parse(vsock).map_err(Error::ParseVhostGuest)?;
+
+        let pci_common = PciDeviceCommonConfig::parse(vsock)?;
+        let socket_fd: i32 = parser
+            .convert("socket_fd")
+            .map_err(Error::ParseVhostGuest)?
+            .ok_or(Error::ParseVhostGuestSocketMissing)?;
+        let uuid: Uuid = parser
+            .convert("uuid")
+            .map_err(Error::ParseVhostGuest)?
+            .ok_or(Error::ParseVhostGuestUuidMissing)?;
+        let device_type = parser
+            .convert("device_type")
+            .map_err(Error::ParseVhostGuest)?
+            .ok_or(Error::ParseVhostGuestDeviceTypeMissing)?;
+        let max_queues = parser
+            .convert("max_queues")
+            .map_err(Error::ParseVhostGuest)?
+            .ok_or(Error::ParseVhostGuestDeviceTypeMissing)?;
+        Ok(VhostGuestConfig {
+            pci_common,
+            uuid: uuid.into_bytes(),
+            device_type,
+            max_queues,
+            // SAFETY: this is not actually safe, but the API makes a safe solution
+            // impossible. The proper fix is to collect all FDs greater than 2 at
+            // the start of main() into a set, and then remove FDs as needed.
+            fds: Some(vec![socket_fd]),
+        })
+    }
+
+    pub fn validate(&self, vm_config: &VmConfig) -> ValidationResult<()> {
+        self.pci_common.validate(vm_config, true)
+    }
+}
+
 impl VsockConfig {
     pub const SYNTAX: &'static str = "Virtio VSOCK parameters \
         \"cid=<context_id>,socket=<socket_path>,iommu=off|virtio,id=<device_id>,\
@@ -3485,6 +3548,11 @@ impl VmConfig {
             || self.pmem.iter().flatten().any(|p| attached(&p.pci_common))
             || self.vdpa.iter().flatten().any(|v| attached(&v.pci_common))
             || self
+                .vhost_guest
+                .iter()
+                .flatten()
+                .any(|v| attached(&v.pci_common))
+            || self
                 .devices
                 .iter()
                 .flatten()
@@ -4084,6 +4152,16 @@ impl VmConfig {
             vsock = Some(vsock_config);
         }
 
+        let mut vhost_guest: Option<Vec<VhostGuestConfig>> = None;
+        if let Some(vhost_guest_list) = &vm_params.vhost_guest {
+            let mut vhost_guest_config_list = Vec::new();
+            for item in vhost_guest_list.iter() {
+                let vhost_guest_config = VhostGuestConfig::parse(item)?;
+                vhost_guest_config_list.push(vhost_guest_config);
+            }
+            vhost_guest = Some(vhost_guest_config_list);
+        }
+
         let mut pci_segments: Option<Box<[PciSegmentConfig]>> = None;
         if let Some(pci_segment_list) = &vm_params.pci_segments {
             let mut pci_segment_config_list = Vec::new();
@@ -4195,6 +4273,7 @@ impl VmConfig {
             preserved_fds: None,
             landlock_enable: vm_params.landlock_enable,
             landlock_rules,
+            vhost_guest,
             #[cfg(feature = "ivshmem")]
             ivshmem,
         };
@@ -4329,6 +4408,7 @@ impl Clone for VmConfig {
             landlock_rules: self.landlock_rules.clone(),
             #[cfg(feature = "ivshmem")]
             ivshmem: self.ivshmem.clone(),
+            vhost_guest: self.vhost_guest.clone(),
             ..*self
         }
     }
@@ -5975,6 +6055,7 @@ id=\"{id}\",pci_segment={pci_segment},queue_sizes={queue_sizes}"
             user_devices: None,
             vdpa: None,
             vsock: None,
+            vhost_guest: None,
             #[cfg(feature = "pvmemcontrol")]
             pvmemcontrol: None,
             pvpanic: false,
@@ -6234,6 +6315,7 @@ id=\"{id}\",pci_segment={pci_segment},queue_sizes={queue_sizes}"
             landlock_rules: None,
             #[cfg(feature = "ivshmem")]
             ivshmem: None,
+            vhost_guest: None,
         };
 
         let valid_config = RestoreConfig {
@@ -6470,6 +6552,7 @@ id=\"{id}\",pci_segment={pci_segment},queue_sizes={queue_sizes}"
             landlock_rules: None,
             #[cfg(feature = "ivshmem")]
             ivshmem: None,
+            vhost_guest: None,
         };
 
         valid_config.validate().unwrap();
