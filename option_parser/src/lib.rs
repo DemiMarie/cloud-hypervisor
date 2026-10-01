@@ -294,6 +294,9 @@ impl OptionParser {
 /// An empty string is treated as `false`.
 pub struct Toggle(pub bool);
 
+/// A UUID.
+pub struct Uuid(pub uuid::Uuid);
+
 #[derive(Error, Debug)]
 pub enum ToggleParseError {
     #[error("Invalid value: {0}")]
@@ -312,6 +315,14 @@ impl Parseable for Toggle {
             "false" => Ok(Toggle(false)),
             _ => Err(ToggleParseError::InvalidValue(s.to_owned())),
         }
+    }
+}
+
+impl Parseable for Uuid {
+    type Err = uuid::Error;
+
+    fn from_str(input: &str) -> Result<Self, <Self as Parseable>::Err> {
+        <uuid::Uuid as FromStr>::from_str(input).map(Self)
     }
 }
 
