@@ -563,6 +563,18 @@ impl From<fs::File> for ExternalFd {
     }
 }
 
+#[derive(PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+pub struct VhostGuestConfig {
+    #[serde(flatten)]
+    pub pci_common: PciDeviceCommonConfig,
+    pub uuid: [u8; 16],
+    pub device_type: u16,
+    pub max_queues: u32,
+    // Deserialization keeps the FD count for restore.
+    #[serde(default)]
+    pub fds: Option<Vec<ExternalFd>>,
+}
+
 #[serde_with::skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct NetConfig {
@@ -1295,6 +1307,7 @@ pub struct VmConfig {
     pub net: Option<Vec<NetConfig>>,
     #[serde(default)]
     pub rng: RngConfig,
+    pub vhost_guest: Option<Vec<VhostGuestConfig>>,
     pub balloon: Option<BalloonConfig>,
     pub generic_vhost_user: Option<Vec<GenericVhostUserConfig>>,
     pub fs: Option<Vec<FsConfig>>,

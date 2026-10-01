@@ -34,6 +34,7 @@ seccompiler = { workspace = true }
 serde_json = { workspace = true }
 signal-hook = { workspace = true }
 thiserror = { workspace = true }
+vhost-guest = { path = "../vhost-guest" }
 vmm = { path = "../vmm" }
 vmm-sys-util = { workspace = true }
 zbus = { workspace = true, features = [
