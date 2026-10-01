@@ -465,6 +465,7 @@ dependencies = [
  "signal-hook",
  "test_infra",
  "thiserror",
+ "vhost-guest",
  "vmm",
  "vmm-sys-util",
  "wait-timeout",
