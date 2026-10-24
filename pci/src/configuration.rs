@@ -36,7 +36,8 @@ const MSIX_CAPABILITY_REGISTER_MASK: u32 = 0xc000_0000;
 const NUM_BAR_REGS: usize = 6;
 const CAPABILITY_LIST_HEAD_OFFSET: usize = 0x34;
 const FIRST_CAPABILITY_OFFSET: usize = 0x40;
-const CAPABILITY_MAX_OFFSET: usize = 192;
+// vhost-guest needs lots of space in the capabilities
+const CAPABILITY_MAX_OFFSET: usize = 256;
 const PCI_EXT_CAP_HEADER_SIZE: u32 = 4;
 pub(crate) const PCIE_CONFIG_SPACE_SIZE: u32 = 0x1000;
 pub(crate) const PCI_EXT_CAP_ALIGN: u32 = 4;
